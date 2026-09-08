@@ -13,6 +13,17 @@ tests and `redis-cli` both compare them literally.
 | `SET key value [EX s\|PX ms] [NX\|XX]` | `+OK\r\n`, or `$-1\r\n` when NX/XX refuses the write |
 | `GET key` | bulk string, or `$-1\r\n` when missing or expired |
 | `RPUSH key el [el ...]` | `:<new length>\r\n` |
+| `LRANGE key start stop` | array of elements, `*0\r\n` when the range is empty or the key is missing |
+
+### LRANGE indexes
+
+- `stop` is **inclusive**: `LRANGE k 0 1` returns two elements.
+- Negative indexes count from the end; `-1` is the last element.
+- Both ends are clamped, never rejected: `LRANGE k -100 100` returns the whole
+  list, and `LRANGE k 5 10` on a 3-element list returns `*0\r\n`.
+- A missing key is an empty array, not an error — and reading it must **not**
+  create the key (`Store.get_list`, not `get_or_create_list`).
+- A non-integer index is `-ERR value is not an integer or out of range`.
 
 ### SET options
 
@@ -42,10 +53,6 @@ Semantics from the Redis docs, for when these stages come up:
 - **`LPUSH key el [el ...]`** — prepends; each element goes to the head in turn,
   so `LPUSH k a b` yields `[b, a]`. Reply: new length as an integer.
 - **`LLEN key`** — length as an integer; `:0\r\n` for a missing key (not an error).
-- **`LRANGE key start stop`** — array of elements, `stop` inclusive. Negative
-  indexes count from the end (`-1` is last). Out-of-range indexes are clamped, so
-  `LRANGE k -100 100` returns the whole list and `LRANGE k 5 10` on a 3-element
-  list returns an empty array `*0\r\n`. A missing key is an empty array, never an error.
 - **`LPOP key [count]`** — without `count`: the element as a bulk string, `$-1\r\n`
   if missing. With `count`: an array of up to `count` elements; since Redis 7.2 a
   missing key returns a **null array** (`*-1\r\n`), not a null bulk string.
