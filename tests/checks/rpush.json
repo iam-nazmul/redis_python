@@ -1,0 +1,19 @@
+[
+  {"send": ["RPUSH", "fruits", "apple"], "expect": ":1\r\n", "label": "creates the list"},
+  {"send": ["RPUSH", "fruits", "banana"], "expect": ":2\r\n", "label": "appends to an existing list"},
+  {"send": ["RPUSH", "fruits", "cherry"], "expect": ":3\r\n", "label": "appends again"},
+  {"send": ["rpush", "fruits", "date"], "expect": ":4\r\n", "label": "verb is case-insensitive"},
+  {"send": ["RPUSH", "fruits", "elder", "fig"], "expect": ":6\r\n", "label": "several elements count once"},
+  {"send": ["RPUSH", "fruits", ""], "expect": ":7\r\n", "label": "empty element is a value"},
+  {"send": ["RPUSH", "fruits", "a\r\nb c"], "expect": ":8\r\n", "label": "binary-safe element"},
+  {"send": ["RPUSH", "fruits", "seen-by-b"], "client": "b", "expect": ":9\r\n", "label": "second client appends to the same list"},
+  {"send": ["RPUSH", "fruits"], "expect": "-ERR wrong number of arguments for 'rpush' command\r\n", "label": "missing element"},
+  {"send": ["RPUSH"], "expect": "-ERR wrong number of arguments for 'rpush' command\r\n", "label": "no arguments"},
+  {"send": ["SET", "plain", "value"], "expect": "+OK\r\n", "label": "setup: a string key"},
+  {"send": ["RPUSH", "plain", "x"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "append onto a string"},
+  {"send": ["GET", "fruits"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "GET on a list"},
+  {"send": ["SET", "doomed", "v", "PX", "80"], "expect": "+OK\r\n", "label": "setup: expiring string"},
+  {"sleep": 0.12},
+  {"send": ["RPUSH", "doomed", "fresh"], "expect": ":1\r\n", "label": "expired string is replaced by a new list"},
+  {"send": ["RPUSH", "doomed", "second"], "expect": ":2\r\n", "label": "and that list then appends normally"}
+]
