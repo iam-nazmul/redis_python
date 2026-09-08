@@ -19,6 +19,12 @@ tests and `redis-cli` both compare them literally.
 | `LPOP key` | bulk string of the first element, `$-1\r\n` when the list is missing or empty |
 | `LPOP key count` | array of up to `count` elements, `*-1\r\n` for a missing key **or a count of 0** |
 | `BLPOP key [key ...] timeout` | `*2\r\n` of [key, element], or `*-1\r\n` on timeout |
+| `TYPE key` | `+string\r\n`, `+list\r\n`, or `+none\r\n` for a missing key |
+
+`TYPE` is the one command that never answers `-WRONGTYPE`: reporting the type is
+its purpose, so every type is a valid reply. Redis names seven — `string`, `list`,
+`set`, `zset`, `hash`, `stream`, `vectorset` — and `Store.type_of` must gain a
+branch for each type this server learns to store, starting with `stream`.
 
 ### BLPOP
 
@@ -94,7 +100,10 @@ Semantics from the Redis docs, for when these stages come up:
 - **`RPOP key [count]`** — the same as `LPOP` from the tail.
 - **`LINDEX key index`** — bulk string, or null bulk string when the index is out
   of range. Negative indexes count from the end.
-- **`TYPE key`** — `+string\r\n`, `+list\r\n`, or `+none\r\n` for a missing key.
+- **`XADD key id field value [field value ...]`** — appends an entry to a stream,
+  replying with the entry id as a bulk string. Streams are the next data type;
+  adding one means a new `Value` variant, a `type_of` branch returning `stream`,
+  and a `-WRONGTYPE` path from the existing list and string accessors.
 
 ## Expiry
 

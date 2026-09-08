@@ -200,6 +200,15 @@ def lpop(store: Store, args: resp.Command) -> bytes:
     return resp.array(popped)
 
 
+@command(b"TYPE")
+def type_(store: Store, args: resp.Command) -> bytes:
+    if len(args) != 2:
+        return wrong_args(b"TYPE")
+    # Redis names seven types; this server stores two, and reports "none" for a
+    # key that does not exist rather than treating it as an error.
+    return resp.simple_string(store.type_of(args[1]))
+
+
 @command(b"BLPOP")
 def blpop(store: Store, args: resp.Command) -> Reply:
     if len(args) < 3:

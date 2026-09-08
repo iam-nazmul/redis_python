@@ -1,0 +1,36 @@
+[
+  {"send": ["SET", "str", "hello"], "expect": "+OK\r\n", "label": "setup: a string"},
+  {"send": ["TYPE", "str"], "expect": "+string\r\n", "label": "string key"},
+
+  {"send": ["RPUSH", "list", "a", "b"], "expect": ":2\r\n", "label": "setup: a list"},
+  {"send": ["TYPE", "list"], "expect": "+list\r\n", "label": "list key"},
+
+  {"send": ["TYPE", "nokey"], "expect": "+none\r\n", "label": "missing key is none, not an error"},
+  {"send": ["GET", "nokey"], "expect": "$-1\r\n", "label": "and TYPE did not create it"},
+
+  {"send": ["TYPE", "str"], "expect": "+string\r\n", "label": "reading the type does not change it"},
+  {"send": ["GET", "str"], "expect": "$5\r\nhello\r\n", "label": "value still readable"},
+
+  {"send": ["SET", "ttl", "v", "PX", "5000"], "expect": "+OK\r\n", "label": "setup: string with a TTL"},
+  {"send": ["TYPE", "ttl"], "expect": "+string\r\n", "label": "an unexpired key keeps its type"},
+
+  {"send": ["SET", "doomed", "v", "PX", "80"], "expect": "+OK\r\n", "label": "setup: expiring string"},
+  {"sleep": 0.12},
+  {"send": ["TYPE", "doomed"], "expect": "+none\r\n", "label": "expired key reports none"},
+
+  {"send": ["RPUSH", "drained", "only"], "expect": ":1\r\n", "label": "setup: single-element list"},
+  {"send": ["TYPE", "drained"], "expect": "+list\r\n", "label": "list before draining"},
+  {"send": ["LPOP", "drained"], "expect": "$4\r\nonly\r\n", "label": "pop the only element"},
+  {"send": ["TYPE", "drained"], "expect": "+none\r\n", "label": "an emptied list reports none, not list"},
+
+  {"send": ["RPUSH", "listified", "x"], "expect": ":1\r\n", "label": "setup: fresh list key"},
+  {"send": ["SET", "listified", "now a string"], "expect": "+OK\r\n", "label": "SET replaces a list with a string"},
+  {"send": ["TYPE", "listified"], "expect": "+string\r\n", "label": "type follows the new value"},
+
+  {"send": ["type", "list"], "expect": "+list\r\n", "label": "verb is case-insensitive"},
+
+  {"send": ["TYPE"], "expect": "-ERR wrong number of arguments for 'type' command\r\n", "label": "no arguments"},
+  {"send": ["TYPE", "str", "extra"], "expect": "-ERR wrong number of arguments for 'type' command\r\n", "label": "too many arguments"},
+
+  {"send": ["TYPE", "list"], "client": "b", "expect": "+list\r\n", "label": "second client sees the same type"}
+]

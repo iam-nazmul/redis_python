@@ -43,6 +43,17 @@ class Store:
             return None
         return entry.value
 
+    def type_of(self, key: bytes) -> bytes:
+        """Return the Redis type name at *key*, or b"none" when it does not exist.
+
+        The one accessor that never raises WrongTypeError: reporting the type is
+        the whole point, so every type is a valid answer.
+        """
+        value = self.get(key)
+        if value is None:
+            return b"none"
+        return b"list" if isinstance(value, list) else b"string"
+
     def get_string(self, key: bytes) -> bytes | None:
         value = self.get(key)
         if isinstance(value, list):
