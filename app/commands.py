@@ -1,11 +1,27 @@
 """Command implementations and the dispatch table."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from app import resp
 from app.store import Store, WrongTypeError, now_ms
 
-Handler = Callable[[Store, resp.Command], bytes]
+
+@dataclass
+class Block:
+    """A command that cannot answer yet.
+
+    Returned instead of a reply when a client must wait: the server parks the
+    connection on *keys* and answers later, either when one of them gains an
+    element or when the timeout expires.
+    """
+
+    keys: list[bytes]
+    timeout: float  # seconds; 0 blocks indefinitely
+
+
+Reply = bytes | Block
+Handler = Callable[[Store, resp.Command], Reply]
 
 _HANDLERS: dict[bytes, Handler] = {}
 
@@ -13,6 +29,9 @@ PONG = resp.simple_string(b"PONG Nazmul")
 SYNTAX_ERROR = resp.error(b"ERR syntax error")
 NOT_AN_INTEGER = resp.error(b"ERR value is not an integer or out of range")
 INVALID_EXPIRY = resp.error(b"ERR invalid expire time in 'set' command")
+OUT_OF_RANGE = resp.error(b"ERR value is out of range, must be positive")
+NEGATIVE_TIMEOUT = resp.error(b"ERR timeout is negative")
+INVALID_TIMEOUT = resp.error(b"ERR timeout is not a float or out of range")
 WRONG_TYPE = resp.error(
     b"WRONGTYPE Operation against a key holding the wrong kind of value"
 )
@@ -32,8 +51,8 @@ def wrong_args(name: bytes) -> bytes:
     return resp.error(b"ERR wrong number of arguments for '%s' command" % name.lower())
 
 
-def execute(store: Store, args: resp.Command) -> bytes:
-    """Run one command and return the reply to send back."""
+def execute(store: Store, args: resp.Command) -> Reply:
+    """Run one command and return the reply, or a Block if it must wait."""
     name = args[0].upper()
     handler = _HANDLERS.get(name)
     if handler is None:
@@ -125,6 +144,17 @@ def rpush(store: Store, args: resp.Command) -> bytes:
     return resp.integer(len(entries))
 
 
+@command(b"LPUSH")
+def lpush(store: Store, args: resp.Command) -> bytes:
+    if len(args) < 3:
+        return wrong_args(b"LPUSH")
+    entries = store.get_or_create_list(args[1])
+    # Each element is pushed onto the head in turn, so the arguments end up at the
+    # front in reverse order: LPUSH k a b c leaves [c, b, a].
+    entries[:0] = reversed(args[2:])
+    return resp.integer(len(entries))
+
+
 def _absolute(index: int, length: int) -> int:
     """Turn a possibly negative list index into an offset from the head."""
     return length + index if index < 0 else index
@@ -147,3 +177,61 @@ def lrange(store: Store, args: resp.Command) -> bytes:
     if start > stop:
         return resp.array([])
     return resp.array(entries[start : stop + 1])
+
+
+@command(b"LPOP")
+def lpop(store: Store, args: resp.Command) -> bytes:
+    if len(args) not in (2, 3):
+        return wrong_args(b"LPOP")
+    if len(args) == 2:
+        value = store.pop_left(args[1])
+        return resp.NULL if value is None else resp.bulk_string(value)
+    try:
+        count = int(args[2])
+    except ValueError:
+        return NOT_AN_INTEGER
+    if count < 0:
+        return OUT_OF_RANGE
+    popped = store.pop_left_many(args[1], count)
+    # Since Redis 7.2 the count form answers a null array both for a missing key
+    # and for a count of zero, rather than an empty array.
+    if not popped:
+        return resp.NULL_ARRAY
+    return resp.array(popped)
+
+
+@command(b"BLPOP")
+def blpop(store: Store, args: resp.Command) -> Reply:
+    if len(args) < 3:
+        return wrong_args(b"BLPOP")
+    *keys, raw_timeout = args[1:]
+    try:
+        timeout = float(raw_timeout)
+    except ValueError:
+        return INVALID_TIMEOUT
+    if timeout < 0:
+        return NEGATIVE_TIMEOUT
+    # Keys are tried in order; the first one holding an element answers at once.
+    popped = pop_first_available(store, keys)
+    return popped if popped is not None else Block(keys, timeout)
+
+
+def pop_first_available(store: Store, keys: list[bytes]) -> bytes | None:
+    """Pop from the first of *keys* that has an element, as a [key, value] array.
+
+    Returns None when every key is empty. Shared with the server, which retries
+    this for a blocked client each time the keyspace changes.
+    """
+    for key in keys:
+        value = store.pop_left(key)
+        if value is not None:
+            return resp.array([key, value])
+    return None
+
+
+@command(b"LLEN")
+def llen(store: Store, args: resp.Command) -> bytes:
+    if len(args) != 2:
+        return wrong_args(b"LLEN")
+    # A missing key is an empty list, so this is 0 rather than an error.
+    return resp.integer(len(store.get_list(args[1])))

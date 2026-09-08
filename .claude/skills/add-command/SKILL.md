@@ -45,9 +45,10 @@ Watch two behaviours that are easy to get wrong:
 
 - **An expired key must look absent**, not empty — go through `Store.get`, which
   deletes on read.
-- **A command that empties a list should delete the key.** In Redis an empty list
-  does not exist: `LLEN` on it is 0 and `TYPE` is `none`. Not yet an issue —
-  nothing removes elements — but the first pop command must handle it.
+- **A command that empties a list must delete the key.** In Redis an empty list
+  does not exist: `LLEN` on it is 0, `TYPE` is `none`, and `GET` returns null
+  rather than a wrong-type error. `Store.pop_left` is the precedent — it deletes
+  the entry when the last element goes; any other removing command must too.
 
 ## 4. Missing encoders
 

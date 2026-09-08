@@ -29,18 +29,41 @@ impossible, check `pgrep -af "^python -u main.py"` before debugging the code.
 
 ## Procedure
 
+Run on a port of your own rather than 6389, so a server someone else is running
+by hand cannot absorb half your connections. `reuse_port=False` makes a collision
+fail loudly instead of silently sharing the port:
+
 ```bash
-pkill -9 -f "^python -u main.py"; sleep 0.3
-python -u main.py > /tmp/bedis.log 2>&1 &
+python -u -c "import logging; logging.basicConfig(level=logging.INFO); from app.server import Server; Server(port=6399, reuse_port=False).serve_forever()" \
+  > /tmp/bedis.log 2>&1 &
 SERVER_PID=$!
 sleep 1
-python .claude/skills/verify-server/scripts/redis_check.py checks.json
+python .claude/skills/verify-server/scripts/redis_check.py --port 6399 checks.json
 kill $SERVER_PID
 ```
 
+**Restart the server between fixtures.** Every fixture assumes an empty keyspace
+and they share key names, so running two against one server makes the second fail
+on state the first left behind — a false regression that looks alarming. Loop:
+
+```bash
+for f in lpush rpush lrange; do
+  python -u -c "import logging; logging.basicConfig(level=logging.INFO); from app.server import Server; Server(port=6399, reuse_port=False).serve_forever()" \
+    > /tmp/bedis.log 2>&1 &
+  pid=$!; sleep 0.8
+  python .claude/skills/verify-server/scripts/redis_check.py --port 6399 tests/checks/$f.json
+  echo "$f exit=$?"
+  kill $pid; wait $pid 2>/dev/null; sleep 0.3
+done
+```
+
 The harness exits non-zero if any check with an `expect` failed, so it can gate a
-commit. Read `/tmp/bedis.log` when a connection behaves oddly — the server logs
-each accept, close, and protocol error.
+commit — but capture `$?` directly into a variable. Reading it after a pipe
+(`... | tail -1`) or inside `$(...)` reports that command's status, not the
+harness's, and silently turns a failing run into a passing one.
+
+Read `/tmp/bedis.log` when a connection behaves oddly — the server logs each
+accept, close, and protocol error.
 
 ## Writing checks
 
@@ -58,6 +81,29 @@ A checks file is a JSON list; see the harness docstring for every entry type.
 
 `client` opens a named extra connection — use it for keyspace sharing and for
 malformed input, which closes the connection it arrives on.
+
+### Blocking commands
+
+A blocking command has no reply to wait for, so send and read are separated:
+
+```json
+[
+  {"send": ["BLPOP", "k", "0"], "client": "b", "read": false},
+  {"recv": "b", "timeout": 0.3, "expect": "", "label": "still blocked"},
+  {"send": ["RPUSH", "k", "v"], "expect": ":1\r\n"},
+  {"recv": "b", "expect": "*2\r\n$1\r\nk\r\n$1\r\nv\r\n", "label": "woken"}
+]
+```
+
+`"read": false` leaves the reply pending; a later `recv` collects it. An `expect`
+of `""` on a `recv` asserts that **nothing** arrived before the timeout, which is
+how you prove a client is still parked rather than silently answered.
+
+Two behaviours no checks file can express — verify them by hand when touching the
+blocking path: a client that disconnects while parked must be dropped (the next
+push should stay in the list rather than vanish into a dead waiter), and an idle
+server holding waiters must burn no CPU (`/proc/<pid>/stat` utime+stime should not
+move), proving the loop sleeps in `select` instead of spinning.
 
 ## Always include the transport regressions
 

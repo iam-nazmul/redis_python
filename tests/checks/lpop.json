@@ -1,0 +1,47 @@
+[
+  {"send": ["RPUSH", "mylist", "one", "two", "three"], "expect": ":3\r\n", "label": "setup: three elements"},
+  {"send": ["LPOP", "mylist"], "expect": "$3\r\none\r\n", "label": "returns the first element"},
+  {"send": ["LLEN", "mylist"], "expect": ":2\r\n", "label": "and removed it"},
+  {"send": ["LRANGE", "mylist", "0", "-1"], "expect": "*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", "label": "the rest keep their order"},
+  {"send": ["LPOP", "mylist"], "expect": "$3\r\ntwo\r\n", "label": "pops the new head"},
+  {"send": ["LPOP", "mylist"], "expect": "$5\r\nthree\r\n", "label": "pops the last element"},
+
+  {"send": ["LLEN", "mylist"], "expect": ":0\r\n", "label": "emptied list has length zero"},
+  {"send": ["GET", "mylist"], "expect": "$-1\r\n", "label": "emptied list is deleted, not left as an empty list"},
+  {"send": ["LPOP", "mylist"], "expect": "$-1\r\n", "label": "popping an emptied list is null"},
+
+  {"send": ["LPOP", "nokey"], "expect": "$-1\r\n", "label": "missing key is null, not an error"},
+  {"send": ["GET", "nokey"], "expect": "$-1\r\n", "label": "and LPOP did not create that key"},
+
+  {"send": ["LPUSH", "headfirst", "b"], "expect": ":1\r\n", "label": "setup: LPUSH b"},
+  {"send": ["LPUSH", "headfirst", "a"], "expect": ":2\r\n", "label": "setup: LPUSH a"},
+  {"send": ["LPOP", "headfirst"], "expect": "$1\r\na\r\n", "label": "pops the LPUSH head"},
+
+  {"send": ["RPUSH", "reuse", "x"], "expect": ":1\r\n", "label": "setup: single element"},
+  {"send": ["LPOP", "reuse"], "expect": "$1\r\nx\r\n", "label": "pop the only element"},
+  {"send": ["RPUSH", "reuse", "y"], "expect": ":1\r\n", "label": "key can be recreated after deletion"},
+  {"send": ["LRANGE", "reuse", "0", "-1"], "expect": "*1\r\n$1\r\ny\r\n", "label": "recreated list holds only the new element"},
+
+  {"send": ["RPUSH", "binlist", "a\r\nb", ""], "expect": ":2\r\n", "label": "setup: binary and empty elements"},
+  {"send": ["LPOP", "binlist"], "expect": "$4\r\na\r\nb\r\n", "label": "binary-safe pop"},
+  {"send": ["LPOP", "binlist"], "expect": "$0\r\n\r\n", "label": "empty element pops as an empty bulk string, not null"},
+
+  {"send": ["RPUSH", "keep", "a", "b"], "expect": ":2\r\n", "label": "setup for case check"},
+  {"send": ["lpop", "keep"], "expect": "$1\r\na\r\n", "label": "verb is case-insensitive"},
+
+  {"send": ["LPOP"], "expect": "-ERR wrong number of arguments for 'lpop' command\r\n", "label": "no arguments"},
+  {"send": ["LPOP", "keep", "2"], "expect": "*1\r\n$1\r\nb\r\n", "label": "count form returns an array (covered fully in lpop_count.json)"},
+  {"send": ["LPOP", "keep", "1", "2"], "expect": "-ERR wrong number of arguments for 'lpop' command\r\n", "label": "a fourth argument is still an arity error"},
+
+  {"send": ["SET", "plain", "value"], "expect": "+OK\r\n", "label": "setup: a string key"},
+  {"send": ["LPOP", "plain"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "LPOP on a string"},
+  {"send": ["GET", "plain"], "expect": "$5\r\nvalue\r\n", "label": "rejected pop left the string alone"},
+
+  {"send": ["SET", "doomed", "v", "PX", "80"], "expect": "+OK\r\n", "label": "setup: expiring string"},
+  {"sleep": 0.12},
+  {"send": ["LPOP", "doomed"], "expect": "$-1\r\n", "label": "expired key pops as null"},
+
+  {"send": ["RPUSH", "shared", "x", "y"], "expect": ":2\r\n", "label": "setup for second client"},
+  {"send": ["LPOP", "shared"], "client": "b", "expect": "$1\r\nx\r\n", "label": "second client pops from the same list"},
+  {"send": ["LRANGE", "shared", "0", "-1"], "expect": "*1\r\n$1\r\ny\r\n", "label": "first client sees the removal"}
+]

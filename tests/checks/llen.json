@@ -1,0 +1,35 @@
+[
+  {"send": ["RPUSH", "mylist", "a", "b", "c"], "expect": ":3\r\n", "label": "setup: three elements"},
+  {"send": ["LLEN", "mylist"], "expect": ":3\r\n", "label": "length of a list"},
+  {"send": ["RPUSH", "mylist", "d"], "expect": ":4\r\n", "label": "append one"},
+  {"send": ["LLEN", "mylist"], "expect": ":4\r\n", "label": "length tracks RPUSH"},
+  {"send": ["LPUSH", "mylist", "z"], "expect": ":5\r\n", "label": "prepend one"},
+  {"send": ["LLEN", "mylist"], "expect": ":5\r\n", "label": "length tracks LPUSH"},
+  {"send": ["LLEN", "mylist"], "expect": ":5\r\n", "label": "reading twice does not change it"},
+
+  {"send": ["RPUSH", "single", "only"], "expect": ":1\r\n", "label": "setup: one element"},
+  {"send": ["LLEN", "single"], "expect": ":1\r\n", "label": "single-element list"},
+
+  {"send": ["LLEN", "nokey"], "expect": ":0\r\n", "label": "missing key is zero, not an error"},
+  {"send": ["GET", "nokey"], "expect": "$-1\r\n", "label": "and LLEN did not create that key"},
+  {"send": ["LLEN", "nokey"], "expect": ":0\r\n", "label": "still zero on a second read"},
+
+  {"send": ["llen", "mylist"], "expect": ":5\r\n", "label": "verb is case-insensitive"},
+
+  {"send": ["RPUSH", "binlist", "a\r\nb", ""], "expect": ":2\r\n", "label": "setup: binary and empty elements"},
+  {"send": ["LLEN", "binlist"], "expect": ":2\r\n", "label": "counts elements, not bytes"},
+
+  {"send": ["LLEN"], "expect": "-ERR wrong number of arguments for 'llen' command\r\n", "label": "no arguments"},
+  {"send": ["LLEN", "mylist", "extra"], "expect": "-ERR wrong number of arguments for 'llen' command\r\n", "label": "too many arguments"},
+
+  {"send": ["SET", "plain", "value"], "expect": "+OK\r\n", "label": "setup: a string key"},
+  {"send": ["LLEN", "plain"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "LLEN on a string"},
+
+  {"send": ["SET", "doomed", "v", "PX", "80"], "expect": "+OK\r\n", "label": "setup: expiring string"},
+  {"sleep": 0.12},
+  {"send": ["LLEN", "doomed"], "expect": ":0\r\n", "label": "expired key reads as zero"},
+
+  {"send": ["RPUSH", "shared", "x", "y"], "expect": ":2\r\n", "label": "setup for second client"},
+  {"send": ["LLEN", "shared"], "client": "b", "expect": ":2\r\n", "label": "second client sees the same length"},
+  {"send": ["LRANGE", "shared", "0", "-1"], "expect": "*2\r\n$1\r\nx\r\n$1\r\ny\r\n", "label": "length agrees with LRANGE"}
+]
