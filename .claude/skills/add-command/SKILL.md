@@ -51,9 +51,11 @@ Watch two behaviours that are easy to get wrong:
 
 ## 4. Missing encoders
 
-Only the five reply types the current commands need exist in `app/resp.py`. Array
-replies (`LRANGE`, `LPOP` with a count) need an `array()` encoder plus the null
-array `*-1\r\n`; add them to `resp.py`, not to the handler.
+`app/resp.py` has simple strings, errors, integers, bulk strings, arrays, and the
+two null forms (`NULL`, `NULL_ARRAY`). `array()` bulk-encodes every element, which
+suits the list commands; an array holding mixed reply types needs assembling by
+hand. Any other RESP type a new command needs belongs in `resp.py`, not in the
+handler.
 
 ## 5. Verify
 

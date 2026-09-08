@@ -12,9 +12,9 @@ if you are adding a command, use those helpers rather than writing byte literals
 | Integer | `:42\r\n` (signed, 64-bit) | `integer(42)` |
 | Bulk string | `$5\r\nhello\r\n` | `bulk_string(b"hello")` |
 | Null bulk string | `$-1\r\n` | `resp.NULL` |
-| Array | `*2\r\n$1\r\na\r\n$1\r\nb\r\n` | not yet implemented — needed for LRANGE |
-| Empty array | `*0\r\n` | — |
-| Null array | `*-1\r\n` | — |
+| Array | `*2\r\n$1\r\na\r\n$1\r\nb\r\n` | `array([b"a", b"b"])` — bulk-string elements only |
+| Empty array | `*0\r\n` | `array([])` |
+| Null array | `*-1\r\n` | `resp.NULL_ARRAY` |
 
 Bulk strings are binary-safe: the length prefix means a value may contain `\r\n`
 or NUL bytes. Never parse or encode a value by splitting on a delimiter.

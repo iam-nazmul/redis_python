@@ -52,6 +52,19 @@ class Store:
     def set(self, key: bytes, value: Value, expires_at: float | None = None) -> None:
         self._entries[key] = Entry(value, expires_at)
 
+    def get_list(self, key: bytes) -> list[bytes]:
+        """Return the list at *key*, or an empty list when the key is absent.
+
+        Read-only: unlike get_or_create_list it never creates the key, because a
+        command that only reads a list must not bring one into existence.
+        """
+        value = self.get(key)
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise WrongTypeError(key)
+        return value
+
     def get_or_create_list(self, key: bytes) -> list[bytes]:
         """Return the list at *key*, creating an empty one if the key is absent.
 

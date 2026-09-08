@@ -26,8 +26,19 @@ def bulk_string(value: bytes) -> bytes:
     return b"$%d%s%s%s" % (len(value), CRLF, value, CRLF)
 
 
+def array(values: list[bytes]) -> bytes:
+    """Encode *values* as an array of bulk strings.
+
+    Every element is bulk-encoded, which is what the list commands need. An array
+    holding other reply types has to be assembled by hand.
+    """
+    return b"*%d%s%s" % (len(values), CRLF, b"".join(bulk_string(v) for v in values))
+
+
 OK = simple_string(b"OK")
 NULL = b"$-1%s" % CRLF
+# Distinct from an empty array: LPOP with a count uses it for a missing key.
+NULL_ARRAY = b"*-1%s" % CRLF
 
 
 def parse(buffer: bytes) -> tuple[list[Command], bytes]:

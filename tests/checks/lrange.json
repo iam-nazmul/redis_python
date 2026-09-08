@@ -1,0 +1,41 @@
+[
+  {"send": ["RPUSH", "mylist", "one", "two", "three"], "expect": ":3\r\n", "label": "setup: three elements"},
+
+  {"send": ["LRANGE", "mylist", "0", "0"], "expect": "*1\r\n$3\r\none\r\n", "label": "first element only"},
+  {"send": ["LRANGE", "mylist", "0", "1"], "expect": "*2\r\n$3\r\none\r\n$3\r\ntwo\r\n", "label": "stop index is inclusive"},
+  {"send": ["LRANGE", "mylist", "1", "2"], "expect": "*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", "label": "range from the middle"},
+  {"send": ["LRANGE", "mylist", "0", "2"], "expect": "*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", "label": "whole list, elements in push order"},
+
+  {"send": ["LRANGE", "mylist", "0", "-1"], "expect": "*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", "label": "-1 is the last element"},
+  {"send": ["LRANGE", "mylist", "-3", "2"], "expect": "*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", "label": "negative start"},
+  {"send": ["LRANGE", "mylist", "-2", "-1"], "expect": "*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", "label": "both ends negative"},
+  {"send": ["LRANGE", "mylist", "-100", "100"], "expect": "*3\r\n$3\r\none\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", "label": "out-of-range ends are clamped"},
+
+  {"send": ["LRANGE", "mylist", "5", "10"], "expect": "*0\r\n", "label": "start past the end is empty"},
+  {"send": ["LRANGE", "mylist", "2", "1"], "expect": "*0\r\n", "label": "start after stop is empty"},
+  {"send": ["LRANGE", "mylist", "-100", "-50"], "expect": "*0\r\n", "label": "range entirely before the head"},
+  {"send": ["LRANGE", "mylist", "1", "100"], "expect": "*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", "label": "stop past the end is clamped"},
+
+  {"send": ["LRANGE", "nokey", "0", "-1"], "expect": "*0\r\n", "label": "missing key is an empty array, not an error"},
+  {"send": ["GET", "nokey"], "expect": "$-1\r\n", "label": "and LRANGE did not create that key"},
+
+  {"send": ["lrange", "mylist", "0", "0"], "expect": "*1\r\n$3\r\none\r\n", "label": "verb is case-insensitive"},
+
+  {"send": ["RPUSH", "binlist", "a\r\nb", ""], "expect": ":2\r\n", "label": "setup: binary and empty elements"},
+  {"send": ["LRANGE", "binlist", "0", "-1"], "expect": "*2\r\n$4\r\na\r\nb\r\n$0\r\n\r\n", "label": "binary-safe round trip"},
+
+  {"send": ["LRANGE", "mylist", "0"], "expect": "-ERR wrong number of arguments for 'lrange' command\r\n", "label": "too few arguments"},
+  {"send": ["LRANGE", "mylist", "0", "1", "2"], "expect": "-ERR wrong number of arguments for 'lrange' command\r\n", "label": "too many arguments"},
+  {"send": ["LRANGE", "mylist", "a", "b"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "non-integer index"},
+  {"send": ["LRANGE", "mylist", "0", "x"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "non-integer stop"},
+
+  {"send": ["SET", "plain", "value"], "expect": "+OK\r\n", "label": "setup: a string key"},
+  {"send": ["LRANGE", "plain", "0", "-1"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "LRANGE on a string"},
+
+  {"send": ["SET", "doomed", "v", "PX", "80"], "expect": "+OK\r\n", "label": "setup: expiring string"},
+  {"sleep": 0.12},
+  {"send": ["LRANGE", "doomed", "0", "-1"], "expect": "*0\r\n", "label": "expired key reads as an empty list"},
+
+  {"send": ["RPUSH", "shared", "x"], "expect": ":1\r\n", "label": "setup for second client"},
+  {"send": ["LRANGE", "shared", "0", "-1"], "client": "b", "expect": "*1\r\n$1\r\nx\r\n", "label": "second client sees the same list"}
+]

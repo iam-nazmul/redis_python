@@ -123,3 +123,27 @@ def rpush(store: Store, args: resp.Command) -> bytes:
     entries = store.get_or_create_list(args[1])
     entries.extend(args[2:])
     return resp.integer(len(entries))
+
+
+def _absolute(index: int, length: int) -> int:
+    """Turn a possibly negative list index into an offset from the head."""
+    return length + index if index < 0 else index
+
+
+@command(b"LRANGE")
+def lrange(store: Store, args: resp.Command) -> bytes:
+    if len(args) != 4:
+        return wrong_args(b"LRANGE")
+    try:
+        start, stop = int(args[2]), int(args[3])
+    except ValueError:
+        return NOT_AN_INTEGER
+    entries = store.get_list(args[1])
+    length = len(entries)
+    # Both ends are clamped rather than rejected: Redis answers an out-of-range
+    # request with whatever part of the range exists, and an empty array if none.
+    start = max(_absolute(start, length), 0)
+    stop = min(_absolute(stop, length), length - 1)
+    if start > stop:
+        return resp.array([])
+    return resp.array(entries[start : stop + 1])
