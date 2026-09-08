@@ -13,7 +13,48 @@ tests and `redis-cli` both compare them literally.
 | `SET key value [EX s\|PX ms] [NX\|XX]` | `+OK\r\n`, or `$-1\r\n` when NX/XX refuses the write |
 | `GET key` | bulk string, or `$-1\r\n` when missing or expired |
 | `RPUSH key el [el ...]` | `:<new length>\r\n` |
+| `LPUSH key el [el ...]` | `:<new length>\r\n` |
 | `LRANGE key start stop` | array of elements, `*0\r\n` when the range is empty or the key is missing |
+| `LLEN key` | `:<length>\r\n`, `:0\r\n` for a missing key |
+| `LPOP key` | bulk string of the first element, `$-1\r\n` when the list is missing or empty |
+| `LPOP key count` | array of up to `count` elements, `*-1\r\n` for a missing key **or a count of 0** |
+| `BLPOP key [key ...] timeout` | `*2\r\n` of [key, element], or `*-1\r\n` on timeout |
+
+### BLPOP
+
+- Keys are tried in order; the first with an element answers immediately and the
+  command never blocks. Otherwise the client is parked.
+- The reply names the key it came from, which is why it is an array of two bulk
+  strings rather than a bare element.
+- `timeout` is in **seconds** and may be fractional; `0` waits indefinitely. A
+  negative timeout is `-ERR timeout is negative`, a non-numeric one is
+  `-ERR timeout is not a float or out of range`.
+- One push wakes exactly one waiter, and it goes to the client that has been
+  waiting longest.
+- A parked client's later commands must not run until it is answered; queue them
+  and run them in order afterwards.
+
+### LPOP count
+
+- The reply type follows the *form*, not the outcome: with a count, popping one
+  element still returns a one-element array, never a bulk string.
+- A count larger than the list returns every element rather than erroring.
+- Since Redis 7.2 both a missing key and `count` 0 answer a **null array**
+  (`*-1\r\n`), not an empty array — the one edge case here that is genuinely
+  counter-intuitive.
+- A negative count is `-ERR value is out of range, must be positive`; a
+  non-integer count is `-ERR value is not an integer or out of range`. Neither
+  removes anything. (The negative-count string is from the Redis source's usual
+  wording and has not been diffed against a live server.)
+
+Popping the last element **deletes the key**: an empty list does not exist in
+Redis, so afterwards `LLEN` is `:0`, `GET` is null rather than a wrong-type error,
+and a later push recreates the key from scratch. `Store.pop_left` handles this;
+any future command that removes elements must do the same.
+
+`LPUSH` pushes each element onto the head in turn, so the arguments end up at the
+front **in reverse**: `LPUSH k a b c` leaves `[c, b, a]`. `RPUSH` and `LPUSH` grow
+opposite ends of the same list and can be mixed freely on one key.
 
 ### LRANGE indexes
 
@@ -50,12 +91,7 @@ On any error the keyspace must be left untouched.
 
 Semantics from the Redis docs, for when these stages come up:
 
-- **`LPUSH key el [el ...]`** — prepends; each element goes to the head in turn,
-  so `LPUSH k a b` yields `[b, a]`. Reply: new length as an integer.
-- **`LLEN key`** — length as an integer; `:0\r\n` for a missing key (not an error).
-- **`LPOP key [count]`** — without `count`: the element as a bulk string, `$-1\r\n`
-  if missing. With `count`: an array of up to `count` elements; since Redis 7.2 a
-  missing key returns a **null array** (`*-1\r\n`), not a null bulk string.
+- **`RPOP key [count]`** — the same as `LPOP` from the tail.
 - **`LINDEX key index`** — bulk string, or null bulk string when the index is out
   of range. Negative indexes count from the end.
 - **`TYPE key`** — `+string\r\n`, `+list\r\n`, or `+none\r\n` for a missing key.
