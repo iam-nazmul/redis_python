@@ -65,6 +65,27 @@ class Store:
             raise WrongTypeError(key)
         return value
 
+    def pop_left(self, key: bytes) -> bytes | None:
+        """Remove and return the first element, or None if there is none to pop."""
+        popped = self.pop_left_many(key, 1)
+        return popped[0] if popped else None
+
+    def pop_left_many(self, key: bytes, count: int) -> list[bytes] | None:
+        """Remove and return up to *count* elements from the head.
+
+        Returns None when the key holds no list, which the caller reports as a
+        null reply. A list emptied by the pop is deleted along with its key: in
+        Redis an empty list does not exist, so the key must stop existing with it.
+        """
+        entries = self.get_list(key)
+        if not entries:
+            return None
+        popped = entries[:count]
+        del entries[:count]
+        if not entries:
+            del self._entries[key]
+        return popped
+
     def get_or_create_list(self, key: bytes) -> list[bytes]:
         """Return the list at *key*, creating an empty one if the key is absent.
 

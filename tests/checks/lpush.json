@@ -1,0 +1,39 @@
+[
+  {"send": ["LPUSH", "mylist", "a"], "expect": ":1\r\n", "label": "creates the list"},
+  {"send": ["LPUSH", "mylist", "b"], "expect": ":2\r\n", "label": "series: second push"},
+  {"send": ["LPUSH", "mylist", "c"], "expect": ":3\r\n", "label": "series: third push"},
+  {"send": ["LPUSH", "mylist", "d"], "expect": ":4\r\n", "label": "series: fourth push"},
+  {"send": ["LRANGE", "mylist", "0", "-1"], "expect": "*4\r\n$1\r\nd\r\n$1\r\nc\r\n$1\r\nb\r\n$1\r\na\r\n", "label": "each push went to the head"},
+
+  {"send": ["LPUSH", "multi", "a", "b", "c"], "expect": ":3\r\n", "label": "several elements in one command"},
+  {"send": ["LRANGE", "multi", "0", "-1"], "expect": "*3\r\n$1\r\nc\r\n$1\r\nb\r\n$1\r\na\r\n", "label": "arguments land at the head in reverse"},
+  {"send": ["LPUSH", "multi", "d", "e"], "expect": ":5\r\n", "label": "prepends to an existing list"},
+  {"send": ["LRANGE", "multi", "0", "-1"], "expect": "*5\r\n$1\r\ne\r\n$1\r\nd\r\n$1\r\nc\r\n$1\r\nb\r\n$1\r\na\r\n", "label": "earlier elements shifted right, order kept"},
+
+  {"send": ["RPUSH", "mixed", "middle"], "expect": ":1\r\n", "label": "setup for mixed pushes"},
+  {"send": ["LPUSH", "mixed", "head"], "expect": ":2\r\n", "label": "LPUSH onto an RPUSH-created list"},
+  {"send": ["RPUSH", "mixed", "tail"], "expect": ":3\r\n", "label": "RPUSH onto an LPUSH-touched list"},
+  {"send": ["LRANGE", "mixed", "0", "-1"], "expect": "*3\r\n$4\r\nhead\r\n$6\r\nmiddle\r\n$4\r\ntail\r\n", "label": "both ends grow the same list"},
+
+  {"send": ["lpush", "mylist", "e"], "expect": ":5\r\n", "label": "verb is case-insensitive"},
+
+  {"send": ["LPUSH", "binlist", "a\r\nb", ""], "expect": ":2\r\n", "label": "binary and empty elements"},
+  {"send": ["LRANGE", "binlist", "0", "-1"], "expect": "*2\r\n$0\r\n\r\n$4\r\na\r\nb\r\n", "label": "binary-safe, reversed"},
+
+  {"send": ["LPUSH", "dups", "x", "x", "x"], "expect": ":3\r\n", "label": "duplicates each count"},
+
+  {"send": ["LPUSH", "mylist"], "expect": "-ERR wrong number of arguments for 'lpush' command\r\n", "label": "missing element"},
+  {"send": ["LPUSH"], "expect": "-ERR wrong number of arguments for 'lpush' command\r\n", "label": "no arguments"},
+
+  {"send": ["SET", "plain", "value"], "expect": "+OK\r\n", "label": "setup: a string key"},
+  {"send": ["LPUSH", "plain", "x"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "LPUSH onto a string"},
+  {"send": ["GET", "plain"], "expect": "$5\r\nvalue\r\n", "label": "rejected push left the string alone"},
+
+  {"send": ["SET", "doomed", "v", "PX", "80"], "expect": "+OK\r\n", "label": "setup: expiring string"},
+  {"sleep": 0.12},
+  {"send": ["LPUSH", "doomed", "fresh"], "expect": ":1\r\n", "label": "expired string is replaced by a new list"},
+
+  {"send": ["LPUSH", "shared", "x"], "expect": ":1\r\n", "label": "setup for second client"},
+  {"send": ["LPUSH", "shared", "y"], "client": "b", "expect": ":2\r\n", "label": "second client prepends to the same list"},
+  {"send": ["LRANGE", "shared", "0", "-1"], "expect": "*2\r\n$1\r\ny\r\n$1\r\nx\r\n", "label": "both clients' pushes in one list"}
+]

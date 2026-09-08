@@ -10,8 +10,14 @@ The checks file is a JSON list. Each entry is one of:
     {"send": ["SET", "k", "v"], "expect": "+OK\\r\\n"}   send a command, compare the reply
     {"send": ["GET", "k"]}                              send it, just print the reply
     {"sleep": 0.15}                                     pause (for expiry checks)
-    {"raw": "*x\\r\\n", "expect": "-ERR Protocol error\\r\\n"}   send raw bytes
+    {"raw": "*x\\r\\n", "expect": "-ERR ...\\r\\n"}       send raw bytes
     {"send": ["GET", "k"], "client": "b"}               use a second connection
+
+Blocking commands need the send and the read separated:
+
+    {"send": ["BLPOP", "k", "0"], "client": "b", "read": false}   send, do not wait
+    {"recv": "b", "expect": "*2\\r\\n..."}                         read b's pending reply
+    {"recv": "b", "timeout": 0.3, "expect": ""}                   assert nothing arrived
 
 Optional "label" names the check in the output. Exits 0 only if every check with
 an "expect" passed, so it can gate a commit.
@@ -53,10 +59,42 @@ def main():
             )
         return connections[name]
 
+    def read(connection, timeout=None):
+        """Read one reply, returning b'' if none arrives before the timeout."""
+        connection.settimeout(options.timeout if timeout is None else timeout)
+        try:
+            return connection.recv(65536)
+        except (TimeoutError, socket.timeout):
+            return b""
+        finally:
+            connection.settimeout(options.timeout)
+
     tested = passed = 0
+
+    def compare(check, label, got):
+        nonlocal tested, passed
+        if "expect" not in check:
+            print(f"  --  {label:<44} {got!r}")
+            return
+        want = check["expect"].encode("latin-1")
+        tested += 1
+        if got == want:
+            passed += 1
+            print(f"PASS  {label:<44} {got!r}")
+        else:
+            print(f"FAIL  {label:<44} {got!r}")
+            print(f"      expected {want!r}")
+
     for check in checks:
         if "sleep" in check:
             time.sleep(check["sleep"])
+            continue
+
+        # A deferred read of a reply an earlier check did not wait for.
+        if "recv" in check:
+            label = check.get("label") or f"recv from {check['recv']}"
+            got = read(connect(check["recv"]), check.get("timeout"))
+            compare(check, label, got)
             continue
 
         if "raw" in check:
@@ -68,23 +106,14 @@ def main():
 
         connection = connect(check.get("client", "default"))
         connection.sendall(payload)
-        try:
-            got = connection.recv(65536)
-        except (TimeoutError, socket.timeout):
-            got = b""
 
-        if "expect" not in check:
-            print(f"  --  {label:<44} {got!r}")
+        # read: false leaves the reply pending for a later "recv" entry, which is
+        # how a blocking command is tested without stalling the whole run.
+        if not check.get("read", True):
+            print(f"  ->  {label:<44} (sent, reply pending)")
             continue
 
-        want = check["expect"].encode("latin-1")
-        tested += 1
-        if got == want:
-            passed += 1
-            print(f"PASS  {label:<44} {got!r}")
-        else:
-            print(f"FAIL  {label:<44} {got!r}")
-            print(f"      expected {want!r}")
+        compare(check, label, read(connection, check.get("timeout")))
 
     for connection in connections.values():
         connection.close()

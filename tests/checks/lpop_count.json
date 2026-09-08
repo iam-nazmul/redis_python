@@ -1,0 +1,50 @@
+[
+  {"send": ["RPUSH", "mylist", "a", "b", "c", "d", "e"], "expect": ":5\r\n", "label": "setup: five elements"},
+  {"send": ["LPOP", "mylist", "2"], "expect": "*2\r\n$1\r\na\r\n$1\r\nb\r\n", "label": "pops two, head first"},
+  {"send": ["LLEN", "mylist"], "expect": ":3\r\n", "label": "and removed both"},
+  {"send": ["LRANGE", "mylist", "0", "-1"], "expect": "*3\r\n$1\r\nc\r\n$1\r\nd\r\n$1\r\ne\r\n", "label": "the rest keep their order"},
+  {"send": ["LPOP", "mylist", "1"], "expect": "*1\r\n$1\r\nc\r\n", "label": "count of one still returns an array"},
+
+  {"send": ["RPUSH", "over", "x", "y"], "expect": ":2\r\n", "label": "setup: two elements"},
+  {"send": ["LPOP", "over", "10"], "expect": "*2\r\n$1\r\nx\r\n$1\r\ny\r\n", "label": "count past the end returns what exists"},
+  {"send": ["LLEN", "over"], "expect": ":0\r\n", "label": "list drained"},
+  {"send": ["GET", "over"], "expect": "$-1\r\n", "label": "drained list is deleted, not left empty"},
+
+  {"send": ["RPUSH", "exact", "p", "q"], "expect": ":2\r\n", "label": "setup for exact count"},
+  {"send": ["LPOP", "exact", "2"], "expect": "*2\r\n$1\r\np\r\n$1\r\nq\r\n", "label": "count equal to length"},
+  {"send": ["GET", "exact"], "expect": "$-1\r\n", "label": "also deletes the key"},
+
+  {"send": ["LPOP", "nokey", "3"], "expect": "*-1\r\n", "label": "missing key is a null array, not an empty one"},
+  {"send": ["GET", "nokey"], "expect": "$-1\r\n", "label": "and did not create the key"},
+
+  {"send": ["RPUSH", "zero", "keep"], "expect": ":1\r\n", "label": "setup for zero count"},
+  {"send": ["LPOP", "zero", "0"], "expect": "*-1\r\n", "label": "count of zero is a null array (Redis 7.2)"},
+  {"send": ["LLEN", "zero"], "expect": ":1\r\n", "label": "and removed nothing"},
+
+  {"send": ["RPUSH", "binlist", "a\r\nb", "", "tail"], "expect": ":3\r\n", "label": "setup: binary and empty elements"},
+  {"send": ["LPOP", "binlist", "2"], "expect": "*2\r\n$4\r\na\r\nb\r\n$0\r\n\r\n", "label": "binary-safe multi pop"},
+
+  {"send": ["RPUSH", "mixed", "one", "two", "three"], "expect": ":3\r\n", "label": "setup for mixed forms"},
+  {"send": ["LPOP", "mixed"], "expect": "$3\r\none\r\n", "label": "no count still returns a bulk string"},
+  {"send": ["LPOP", "mixed", "2"], "expect": "*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n", "label": "count form after the single form"},
+
+  {"send": ["RPUSH", "errs", "a", "b"], "expect": ":2\r\n", "label": "setup for error cases"},
+  {"send": ["LPOP", "errs", "-1"], "expect": "-ERR value is out of range, must be positive\r\n", "label": "negative count"},
+  {"send": ["LPOP", "errs", "abc"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "non-integer count"},
+  {"send": ["LPOP", "errs", "1", "2"], "expect": "-ERR wrong number of arguments for 'lpop' command\r\n", "label": "too many arguments"},
+  {"send": ["LLEN", "errs"], "expect": ":2\r\n", "label": "no rejected command removed anything"},
+
+  {"send": ["lpop", "errs", "1"], "expect": "*1\r\n$1\r\na\r\n", "label": "verb is case-insensitive"},
+
+  {"send": ["SET", "plain", "value"], "expect": "+OK\r\n", "label": "setup: a string key"},
+  {"send": ["LPOP", "plain", "2"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "count form on a string"},
+  {"send": ["GET", "plain"], "expect": "$5\r\nvalue\r\n", "label": "rejected pop left the string alone"},
+
+  {"send": ["SET", "doomed", "v", "PX", "80"], "expect": "+OK\r\n", "label": "setup: expiring string"},
+  {"sleep": 0.12},
+  {"send": ["LPOP", "doomed", "2"], "expect": "*-1\r\n", "label": "expired key is a null array"},
+
+  {"send": ["RPUSH", "shared", "x", "y", "z"], "expect": ":3\r\n", "label": "setup for second client"},
+  {"send": ["LPOP", "shared", "2"], "client": "b", "expect": "*2\r\n$1\r\nx\r\n$1\r\ny\r\n", "label": "second client pops two"},
+  {"send": ["LRANGE", "shared", "0", "-1"], "expect": "*1\r\n$1\r\nz\r\n", "label": "first client sees the removals"}
+]

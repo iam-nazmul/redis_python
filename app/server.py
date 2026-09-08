@@ -3,10 +3,11 @@
 import logging
 import selectors
 import socket
+from collections import deque
 from dataclasses import dataclass, field
 
 from app import commands, resp
-from app.store import Store
+from app.store import Store, WrongTypeError, now_ms
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 6389
@@ -17,11 +18,25 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Connection:
-    """A client socket plus the bytes of a command that has not fully arrived."""
+    """A client socket, its half-received bytes, and any commands still to run."""
 
     socket: socket.socket
     address: tuple
     buffer: bytearray = field(default_factory=bytearray)
+    # Commands parsed but not yet executed. A blocked client keeps filling this
+    # instead of running them, so the order it sent them in is preserved.
+    pending: deque = field(default_factory=deque)
+    blocked: "Waiter | None" = None
+    closed: bool = False
+
+
+@dataclass
+class Waiter:
+    """A client parked on one or more keys until an element arrives or time runs out."""
+
+    connection: Connection
+    keys: list[bytes]
+    deadline: float | None  # monotonic ms, or None to wait indefinitely
 
 
 class Server:
@@ -36,6 +51,8 @@ class Server:
         self.reuse_port = reuse_port
         self.store = Store()
         self.selector = selectors.DefaultSelector()
+        # Ordered by arrival, so the longest-waiting client is served first.
+        self.waiters: list[Waiter] = []
 
     def serve_forever(self) -> None:
         with socket.create_server(
@@ -46,15 +63,20 @@ class Server:
             logger.info("bedis listening on %s:%s", self.host, self.port)
             try:
                 while True:
-                    for key, _ in self.selector.select():
+                    # Wake for I/O, or at the earliest waiter deadline.
+                    for key, _ in self.selector.select(self._next_timeout()):
                         if key.data is None:
                             self._accept(key.fileobj)
                         else:
                             self._read(key.data)
+                    self._serve_waiters()
+                    self._expire_waiters()
             except KeyboardInterrupt:
                 logger.info("shutting down")
             finally:
                 self.selector.close()
+
+    # --- connections -----------------------------------------------------
 
     def _accept(self, listener: socket.socket) -> None:
         client, address = listener.accept()
@@ -63,6 +85,11 @@ class Server:
         self.selector.register(client, selectors.EVENT_READ, data=connection)
 
     def _close(self, connection: Connection) -> None:
+        if connection.closed:
+            return
+        connection.closed = True
+        if connection.blocked is not None:
+            self._forget(connection.blocked)
         logger.info("closed connection from %s", connection.address)
         self.selector.unregister(connection.socket)
         connection.socket.close()
@@ -85,10 +112,18 @@ class Server:
             self._close(connection)
             return
         connection.buffer = bytearray(tail)
-        for args in parsed:
-            if not args:
-                continue
-            if not self._reply(connection, commands.execute(self.store, args)):
+        connection.pending.extend(args for args in parsed if args)
+        self._drain(connection)
+
+    def _drain(self, connection: Connection) -> None:
+        """Run queued commands until they run out or one blocks."""
+        while connection.pending and not connection.closed:
+            if connection.blocked is not None:
+                return  # stay parked; the rest waits until this client is answered
+            reply = commands.execute(self.store, connection.pending.popleft())
+            if isinstance(reply, commands.Block):
+                self._block(connection, reply)
+            elif not self._reply(connection, reply):
                 return
 
     def _reply(self, connection: Connection, reply: bytes) -> bool:
@@ -99,3 +134,50 @@ class Server:
             self._close(connection)
             return False
         return True
+
+    # --- blocking --------------------------------------------------------
+
+    def _block(self, connection: Connection, block: commands.Block) -> None:
+        deadline = None if block.timeout == 0 else now_ms() + block.timeout * 1000
+        waiter = Waiter(connection, block.keys, deadline)
+        connection.blocked = waiter
+        self.waiters.append(waiter)
+
+    def _forget(self, waiter: Waiter) -> None:
+        waiter.connection.blocked = None
+        if waiter in self.waiters:
+            self.waiters.remove(waiter)
+
+    def _unblock(self, waiter: Waiter, reply: bytes) -> None:
+        self._forget(waiter)
+        if self._reply(waiter.connection, reply):
+            # Anything the client sent while parked runs now, in order.
+            self._drain(waiter.connection)
+
+    def _serve_waiters(self) -> None:
+        """Hand elements to parked clients, longest-waiting first."""
+        for waiter in list(self.waiters):
+            if waiter.connection.closed:
+                self._forget(waiter)
+                continue
+            try:
+                popped = commands.pop_first_available(self.store, waiter.keys)
+            except WrongTypeError:
+                # A key now holds something that is not a list; keep waiting for
+                # one that does rather than failing a command already accepted.
+                continue
+            if popped is not None:
+                self._unblock(waiter, popped)
+
+    def _expire_waiters(self) -> None:
+        now = now_ms()
+        for waiter in list(self.waiters):
+            if waiter.deadline is not None and now >= waiter.deadline:
+                self._unblock(waiter, resp.NULL_ARRAY)
+
+    def _next_timeout(self) -> float | None:
+        """Seconds until the earliest deadline, or None when nothing is waiting."""
+        deadlines = [w.deadline for w in self.waiters if w.deadline is not None]
+        if not deadlines:
+            return None
+        return max((min(deadlines) - now_ms()) / 1000, 0)

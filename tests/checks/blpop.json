@@ -1,0 +1,75 @@
+[
+  {"send": ["RPUSH", "ready", "now"], "expect": ":1\r\n", "label": "setup: a list with an element"},
+  {"send": ["BLPOP", "ready", "0"], "expect": "*2\r\n$5\r\nready\r\n$3\r\nnow\r\n", "label": "element available: returns [key, value] at once"},
+  {"send": ["GET", "ready"], "expect": "$-1\r\n", "label": "and the drained key is deleted"},
+
+  {"send": ["BLPOP", "later", "0"], "client": "b", "read": false, "label": "client b blocks indefinitely"},
+  {"recv": "b", "timeout": 0.3, "expect": "", "label": "b is still waiting, nothing sent"},
+  {"send": ["RPUSH", "later", "arrived"], "expect": ":1\r\n", "label": "another client pushes"},
+  {"recv": "b", "expect": "*2\r\n$5\r\nlater\r\n$7\r\narrived\r\n", "label": "b is woken with the pushed element"},
+  {"send": ["LLEN", "later"], "expect": ":0\r\n", "label": "the element went to the blocked client, not the list"},
+  {"send": ["GET", "later"], "expect": "$-1\r\n", "label": "and the key does not linger"},
+
+  {"send": ["BLPOP", "fromhead", "0"], "client": "b", "read": false, "label": "b blocks again"},
+  {"recv": "b", "timeout": 0.2, "expect": "", "label": "b waiting"},
+  {"send": ["LPUSH", "fromhead", "viaLPUSH"], "expect": ":1\r\n", "label": "LPUSH also wakes a waiter"},
+  {"recv": "b", "expect": "*2\r\n$8\r\nfromhead\r\n$8\r\nviaLPUSH\r\n", "label": "woken by LPUSH"},
+
+  {"send": ["BLPOP", "queue", "0"], "client": "b", "read": false, "label": "b blocks first"},
+  {"sleep": 0.1},
+  {"send": ["BLPOP", "queue", "0"], "client": "c", "read": false, "label": "c blocks second"},
+  {"sleep": 0.1},
+  {"send": ["RPUSH", "queue", "first"], "expect": ":1\r\n", "label": "one element for two waiters"},
+  {"recv": "b", "expect": "*2\r\n$5\r\nqueue\r\n$5\r\nfirst\r\n", "label": "longest waiting client is served"},
+  {"recv": "c", "timeout": 0.3, "expect": "", "label": "the other stays blocked"},
+  {"send": ["RPUSH", "queue", "second"], "expect": ":1\r\n", "label": "a second element arrives"},
+  {"recv": "c", "expect": "*2\r\n$5\r\nqueue\r\n$6\r\nsecond\r\n", "label": "and goes to the remaining waiter"},
+
+  {"send": ["RPUSH", "many", "a", "b", "c"], "expect": ":3\r\n", "label": "setup: three elements"},
+  {"send": ["BLPOP", "many", "0"], "expect": "*2\r\n$4\r\nmany\r\n$1\r\na\r\n", "label": "takes only one element"},
+  {"send": ["LRANGE", "many", "0", "-1"], "expect": "*2\r\n$1\r\nb\r\n$1\r\nc\r\n", "label": "the rest remain"},
+
+  {"send": ["BLPOP", "never", "0.3"], "client": "b", "read": false, "label": "b blocks with a 0.3s timeout"},
+  {"recv": "b", "timeout": 1.0, "expect": "*-1\r\n", "label": "timeout returns a null array"},
+  {"send": ["BLPOP", "never2", "0.2"], "expect": "*-1\r\n", "label": "timeout on the main client too"},
+  {"send": ["BLPOP", "halfsec", "0.5"], "expect": "*-1\r\n", "label": "a 0.5s timeout expires with a null array"},
+
+  {"send": ["BLPOP", "soon", "5"], "client": "b", "read": false, "label": "b blocks with a generous 5s timeout"},
+  {"recv": "b", "timeout": 0.2, "expect": "", "label": "still waiting inside the timeout"},
+  {"send": ["RPUSH", "elsewhere", "nope"], "expect": ":1\r\n", "label": "push to an unrelated key"},
+  {"recv": "b", "timeout": 0.3, "expect": "", "label": "an unrelated push does not wake it"},
+  {"send": ["RPUSH", "soon", "yes"], "expect": ":1\r\n", "label": "push to the awaited key"},
+  {"recv": "b", "expect": "*2\r\n$4\r\nsoon\r\n$3\r\nyes\r\n", "label": "unblocks early, before the timeout expires"},
+  {"send": ["LRANGE", "elsewhere", "0", "-1"], "expect": "*1\r\n$4\r\nnope\r\n", "label": "the unrelated key kept its element"},
+
+  {"send": ["BLPOP", "tiny", "0.01"], "expect": "*-1\r\n", "label": "a very small timeout still expires cleanly"},
+
+  {"send": ["BLPOP", "k1", "k2", "0"], "client": "b", "read": false, "label": "b blocks on two keys"},
+  {"recv": "b", "timeout": 0.2, "expect": "", "label": "b waiting on both"},
+  {"send": ["RPUSH", "k2", "second-key"], "expect": ":1\r\n", "label": "push to the second key"},
+  {"recv": "b", "expect": "*2\r\n$2\r\nk2\r\n$10\r\nsecond-key\r\n", "label": "reply names the key that supplied it"},
+
+  {"send": ["RPUSH", "both", "here"], "expect": ":1\r\n", "label": "setup: first key has an element"},
+  {"send": ["RPUSH", "other", "there"], "expect": ":1\r\n", "label": "setup: second key too"},
+  {"send": ["BLPOP", "both", "other", "0"], "expect": "*2\r\n$4\r\nboth\r\n$4\r\nhere\r\n", "label": "keys are tried in order"},
+
+  {"send": ["BLPOP", "queued", "0"], "client": "b", "read": false, "label": "b blocks"},
+  {"send": ["PING"], "client": "b", "read": false, "label": "b sends another command while blocked"},
+  {"recv": "b", "timeout": 0.3, "expect": "", "label": "the queued command does not run yet"},
+  {"send": ["RPUSH", "queued", "go"], "expect": ":1\r\n", "label": "unblock b"},
+  {"recv": "b", "expect": "*2\r\n$6\r\nqueued\r\n$2\r\ngo\r\n", "label": "b gets the BLPOP reply first"},
+  {"recv": "b", "expect": "+PONG Nazmul\r\n", "label": "then the command it sent while blocked"},
+
+  {"send": ["blpop", "ready", "0.2"], "expect": "*-1\r\n", "label": "verb is case-insensitive"},
+
+  {"send": ["BLPOP", "k"], "expect": "-ERR wrong number of arguments for 'blpop' command\r\n", "label": "missing timeout"},
+  {"send": ["BLPOP"], "expect": "-ERR wrong number of arguments for 'blpop' command\r\n", "label": "no arguments"},
+  {"send": ["BLPOP", "k", "-1"], "expect": "-ERR timeout is negative\r\n", "label": "negative timeout"},
+  {"send": ["BLPOP", "k", "abc"], "expect": "-ERR timeout is not a float or out of range\r\n", "label": "non-numeric timeout"},
+
+  {"send": ["SET", "plain", "value"], "expect": "+OK\r\n", "label": "setup: a string key"},
+  {"send": ["BLPOP", "plain", "0"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "BLPOP on a string"},
+  {"send": ["GET", "plain"], "expect": "$5\r\nvalue\r\n", "label": "and the string is untouched"},
+
+  {"send": ["PING"], "expect": "+PONG Nazmul\r\n", "label": "server still serving other clients normally"}
+]
