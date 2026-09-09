@@ -4,7 +4,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app import resp
-from app.store import EntryId, Store, WrongTypeError, now_ms
+from app.store import (
+    MIN_ENTRY_ID,
+    EntryId,
+    Store,
+    StreamOrderError,
+    WrongTypeError,
+    now_ms,
+)
 
 
 @dataclass
@@ -33,6 +40,12 @@ OUT_OF_RANGE = resp.error(b"ERR value is out of range, must be positive")
 NEGATIVE_TIMEOUT = resp.error(b"ERR timeout is negative")
 INVALID_ENTRY_ID = resp.error(
     b"ERR Invalid stream ID specified as stream command argument"
+)
+ENTRY_ID_TOO_SMALL = resp.error(
+    b"ERR The ID specified in XADD is equal or smaller than the target stream top item"
+)
+ENTRY_ID_AT_MINIMUM = resp.error(
+    b"ERR The ID specified in XADD must be greater than 0-0"
 )
 INVALID_TIMEOUT = resp.error(b"ERR timeout is not a float or out of range")
 WRONG_TYPE = resp.error(
@@ -270,8 +283,14 @@ def xadd(store: Store, args: resp.Command) -> bytes:
     entry_id = _parse_entry_id(args[2])
     if entry_id is None:
         return INVALID_ENTRY_ID
-    # The id is validated before the key is touched, so a rejected command leaves
-    # the keyspace as it was — it must not create the stream while erroring.
+    # Both id checks happen before the key is touched, and so ahead of -WRONGTYPE:
+    # that is Redis' own order, and it keeps a rejected command from creating the
+    # stream it would then have to fail on, leaving an empty key behind.
+    if entry_id == MIN_ENTRY_ID:
+        return ENTRY_ID_AT_MINIMUM
     stream = store.get_or_create_stream(args[1])
-    stream.append(entry_id, args[3:])
+    try:
+        stream.append(entry_id, args[3:])
+    except StreamOrderError:
+        return ENTRY_ID_TOO_SMALL
     return resp.bulk_string(entry_id.encode())

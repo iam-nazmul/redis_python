@@ -53,14 +53,32 @@ branch for each type this server learns to store. `stream` is the third one here
 - A malformed id is `-ERR Invalid stream ID specified as stream command
   argument`. The id is parsed **before** the key is looked at, so an invalid id
   neither creates the stream nor reports `-WRONGTYPE` on a key of another type.
+- Fields keep their insertion order and repeated fields are not merged, which is
+  what a later `XRANGE` has to replay.
 - Ids are unbounded here rather than 64-bit: Python ints do not overflow, so an
   id past `2**64` round-trips instead of wrapping as it would in real Redis.
 - **Only explicit `<ms>-<seq>` ids are accepted for now.** Real Redis also takes
   `*` and `<ms>-*` and generates the missing parts; until this server does, both
-  are rejected as invalid ids. Ordering is not enforced yet either — real Redis
-  requires each id to be greater than the last and rejects `0-0`.
-- Fields keep their insertion order and repeated fields are not merged, which is
-  what a later `XRANGE` has to replay.
+  are rejected as invalid ids.
+
+Ids must advance, and the two ways they can fail have **different** replies:
+
+- Not greater than the last id — equal, an earlier millisecond, or the same
+  millisecond with an earlier sequence — is `-ERR The ID specified in XADD is
+  equal or smaller than the target stream top item`. A later millisecond may
+  restart the sequence at 0; only the pair as a whole has to increase.
+- `0-0` is `-ERR The ID specified in XADD must be greater than 0-0`, on an empty
+  stream and a populated one alike. `0-1` is the smallest id any stream accepts.
+
+Both id checks run **before the key is looked at**, so on a key of another type a
+malformed id, or `0-0`, is reported instead of `-WRONGTYPE`. That is the order in
+the Redis source — the `0-0` check returns early precisely so a doomed append
+cannot leave an empty stream behind — and it has not been diffed against a live
+server. A refused append leaves the stream unchanged and still usable.
+
+An empty stream starts at `0-0`, tracked as `Stream.last_id` rather than read
+from the last entry: it is a high-water mark, so a stream later emptied by `XDEL`
+must keep refusing the ids it has already handed out.
 
 ### LPOP count
 

@@ -27,6 +27,11 @@ class StreamEntry:
     fields: list[bytes]
 
 
+# The id every stream starts from: the first entry must beat it, which is why
+# Redis rejects an explicit 0-0 outright.
+MIN_ENTRY_ID = EntryId(0, 0)
+
+
 @dataclass
 class Stream:
     """A sequence of entries in ascending id order.
@@ -36,9 +41,16 @@ class Stream:
     """
 
     entries: list[StreamEntry] = field(default_factory=list)
+    # Tracked apart from entries[-1] because it is the high-water mark, not the
+    # last element: a stream emptied by a future XDEL still refuses ids below it.
+    last_id: EntryId = MIN_ENTRY_ID
 
     def append(self, entry_id: EntryId, fields: list[bytes]) -> EntryId:
+        """Append an entry, or raise StreamOrderError if the id does not advance."""
+        if entry_id <= self.last_id:
+            raise StreamOrderError(entry_id)
         self.entries.append(StreamEntry(entry_id, fields))
+        self.last_id = entry_id
         return entry_id
 
 
@@ -48,6 +60,10 @@ Value = bytes | list[bytes] | Stream
 
 class WrongTypeError(Exception):
     """Raised when a command is used on a key holding a different type."""
+
+
+class StreamOrderError(Exception):
+    """Raised when an entry id is not strictly greater than the stream's last id."""
 
 
 def now_ms() -> float:
