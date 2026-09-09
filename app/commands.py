@@ -447,6 +447,20 @@ def xrange(store: Store, args: resp.Command) -> bytes:
     return _encode_entries(store.get_stream(args[1]).range(start, end))
 
 
+def _parse_read_start(raw: bytes) -> EntryId | None:
+    """The **exclusive** lower bound of an XREAD, or None when *raw* is not an id.
+
+    XREAD returns what comes after the id it is given, so the bound is the id just
+    past it. Strict where the XRANGE bounds are not: "-", "+" and "*" are invalid
+    ids here rather than shorthands.
+    """
+    parts = _split_id(raw)
+    if parts is None:
+        return None
+    milliseconds, sequence = parts
+    return _after(EntryId(milliseconds, 0 if sequence is None else sequence))
+
+
 def _encode_stream(key: bytes, entries: list[StreamEntry]) -> bytes:
     """One XREAD element: the stream's key, then the entries read from it."""
     return resp.array_of([resp.bulk_string(key), _encode_entries(entries)])
@@ -459,25 +473,30 @@ def xread(store: Store, args: resp.Command) -> bytes:
         return wrong_args(b"XREAD")
     if args[1].upper() != b"STREAMS":
         return SYNTAX_ERROR
+    # The keys come first and their ids follow, so the two halves line up by
+    # position: STREAMS a b 0 5 reads a from 0 and b from 5.
     keys_and_ids = args[2:]
     if len(keys_and_ids) % 2:
         return UNBALANCED_STREAMS
-    if len(keys_and_ids) != 2:
-        # Reading several streams at once is a later stage; until then the only
-        # shape this understands is one key and one id.
-        return SYNTAX_ERROR
-    key, raw_id = keys_and_ids
-    parts = _split_id(raw_id)
-    if parts is None:
-        return INVALID_ENTRY_ID
-    milliseconds, sequence = parts
-    # XREAD is exclusive where XRANGE is inclusive, so it starts just past the id
-    # it was given and runs to the end of the stream.
-    after = _after(EntryId(milliseconds, 0 if sequence is None else sequence))
-    entries = store.get_stream(key).range(after, None)
-    # A stream with nothing new is left out of the reply entirely, and with only
-    # one stream to report that leaves nothing at all: a null array, not an empty
-    # one, which is how a blocking XREAD will later say it timed out.
-    if not entries:
+    half = len(keys_and_ids) // 2
+    keys, raw_ids = keys_and_ids[:half], keys_and_ids[half:]
+    # Every id is parsed before any stream is read, so one malformed id fails the
+    # whole command rather than a prefix of it.
+    starts = []
+    for raw_id in raw_ids:
+        start = _parse_read_start(raw_id)
+        if start is None:
+            return INVALID_ENTRY_ID
+        starts.append(start)
+    # Streams are reported in the order they were asked for, and a stream with
+    # nothing new is left out rather than reported empty.
+    replies = []
+    for key, start in zip(keys, starts):
+        entries = store.get_stream(key).range(start, None)
+        if entries:
+            replies.append(_encode_stream(key, entries))
+    # Nothing new anywhere is the null array, not an empty one — the same reply a
+    # blocking XREAD will later use for a timeout.
+    if not replies:
         return resp.NULL_ARRAY
-    return resp.array_of([_encode_stream(key, entries)])
+    return resp.array_of(replies)

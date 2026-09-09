@@ -47,9 +47,22 @@ def read(key, entry_id, expect, label):
     return {"send": ["XREAD", "STREAMS", key, entry_id], "expect": expect, "label": label}
 
 
+def streams_reply(*pairs):
+    """The XREAD reply for several streams, each pair a (key, entries) tuple."""
+    reported = "".join(
+        f"*2\r\n{bulk(key)}*{len(entries)}\r\n" + "".join(entries)
+        for key, entries in pairs
+    )
+    return f"*{len(pairs)}\r\n" + reported
+
+
 def stream_reply(key, *entries):
     """The XREAD reply for one stream: [[key, [entries...]]]."""
-    return f"*1\r\n*2\r\n{bulk(key)}*{len(entries)}\r\n" + "".join(entries)
+    return streams_reply((key, entries))
+
+
+def read_many(keys, ids, expect, label):
+    return {"send": ["XREAD", "STREAMS", *keys, *ids], "expect": expect, "label": label}
 
 
 checks = []
@@ -258,8 +271,47 @@ XREAD_CHECKS = [
      "label": "nor is BLOCK"},
     {"send": ["XREAD", "STREAMS", "s", "dup", "0"], "expect": UNBALANCED,
      "label": "two keys and one id is unbalanced"},
-    {"send": ["XREAD", "STREAMS", "s", "dup", "0", "0"], "expect": SYNTAX,
-     "label": "reading two streams at once is a later stage"},
+
+    # Several streams at once, reported in the order they were asked for.
+    add("t", "1-1", "x", "9", label="setup: a second stream"),
+    add("t", "2-2", "y", "8", label="setup: and a second entry in it"),
+    read_many(["s", "t"], ["0", "0"],
+              streams_reply(("s", [r50, r51, r60]),
+                            ("t", [entry("1-1", "x", "9"), entry("2-2", "y", "8")])),
+              "two streams come back in the order given"),
+    read_many(["t", "s"], ["0", "0"],
+              streams_reply(("t", [entry("1-1", "x", "9"), entry("2-2", "y", "8")]),
+                            ("s", [r50, r51, r60])),
+              "asking in the other order reverses the reply"),
+    read_many(["s", "t"], ["5-1", "1-1"],
+              streams_reply(("s", [r60]), ("t", [entry("2-2", "y", "8")])),
+              "each stream is read from its own id"),
+    read_many(["s", "t"], ["9-9", "0"],
+              streams_reply(("t", [entry("1-1", "x", "9"), entry("2-2", "y", "8")])),
+              "a stream with nothing new is left out, not reported empty"),
+    read_many(["s", "t"], ["0", "9-9"],
+              streams_reply(("s", [r50, r51, r60])),
+              "including when it is the last one asked for"),
+    read_many(["s", "t"], ["9-9", "9-9"], NULL_ARRAY,
+              "nothing new anywhere is the null array"),
+    read_many(["s", "nokey"], ["0", "0"], streams_reply(("s", [r50, r51, r60])),
+              "a missing key is simply absent from the reply"),
+    read_many(["nokey", "missing"], ["0", "0"], NULL_ARRAY, "all keys missing"),
+    read_many(["s", "s"], ["0", "5-1"],
+              streams_reply(("s", [r50, r51, r60]), ("s", [r60])),
+              "the same key twice is read twice, at each id"),
+    read_many(["s", "t", "dup"], ["9-9", "0", "0"],
+              streams_reply(("t", [entry("1-1", "x", "9"), entry("2-2", "y", "8")]),
+                            ("dup", [entry("1-1", "a", "1", "a", "2")])),
+              "three streams with an empty one in the middle"),
+
+    read_many(["s", "str"], ["0", "0"], WRONGTYPE,
+              "a wrong type anywhere fails the whole read"),
+    read_many(["s", "t"], ["0", "notanid"], INVALID,
+              "and so does a malformed id in the second position"),
+    read_many(["s", "t", "dup"], ["0", "0"], UNBALANCED,
+              "three keys and two ids is unbalanced"),
+    read_many(["s", "t"], ["0", "0", "0"], UNBALANCED, "as is two keys and three ids"),
 
     read("s", "5-1", stream_reply("s", r60), "the stream still reads after the errors"),
     {"send": ["XREAD", "STREAMS", "s", "5-1"], "client": "b", "expect": stream_reply("s", r60),

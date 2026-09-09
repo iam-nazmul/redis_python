@@ -22,7 +22,7 @@ tests and `redis-cli` both compare them literally.
 | `TYPE key` | `+string\r\n`, `+list\r\n`, `+stream\r\n`, or `+none\r\n` for a missing key |
 | `XADD key id field value [...]` | bulk string of the id the entry was stored under; `id` may be `<ms>-<seq>`, `<ms>-*` or `*` |
 | `XRANGE key start end` | array of `[id, [field, value, ...]]` pairs, `*0\r\n` when nothing matches; a bound may be `<ms>`, `<ms>-<seq>`, `-`, or `+` as the end |
-| `XREAD STREAMS key id` | array of one `[key, [entries]]`, or `*-1\r\n` when the stream has nothing newer |
+| `XREAD STREAMS key [key ...] id [id ...]` | array of `[key, [entries]]`, one per stream with something newer, or `*-1\r\n` when none has |
 
 `TYPE` is the one command that never answers `-WRONGTYPE`: reporting the type is
 its purpose, so every type is a valid reply. Redis names seven — `string`, `list`,
@@ -144,10 +144,18 @@ has no obvious value here: unlike real Redis, sequences are unbounded ints.
   entries *after* `5-0`. A bare `<ms>` means sequence 0, so `k 6` excludes `6-0`
   itself — the same id, read differently by the two commands.
 - The reply nests one level deeper than `XRANGE`: an array of streams, each
-  `[key, [entry, ...]]`. A stream with nothing new is left out, and with a single
-  stream that leaves nothing to report, so the reply is the **null array**
+  `[key, [entry, ...]]`, **in the order the keys were asked for**. A stream with
+  nothing new is left out rather than reported empty, so the reply may be shorter
+  than the request; when no stream has anything, it is the **null array**
   `*-1\r\n` rather than an empty one. A blocking `XREAD` will use the same reply
   for a timeout.
+- All the keys come first and all the ids follow, lining up by position:
+  `STREAMS a b 0 5` reads `a` from `0` and `b` from `5`. A key may be repeated,
+  and is then read once per id given for it. A missing key is simply absent from
+  the reply.
+- One bad argument fails the whole command: a malformed id anywhere is the
+  invalid-id error and nothing is read, and a key of the wrong type anywhere is
+  `-WRONGTYPE`, even when other streams had entries to report.
 - Ids are strict: no `-`, `+` or `*`. Those are `-ERR Invalid stream ID specified
   as stream command argument`.
 - Not `STREAMS` where it is expected is `-ERR syntax error`; an odd number of
@@ -155,9 +163,9 @@ has no obvious value here: unlike real Redis, sequences are unbounded ints.
   stream key an ID or '$' must be specified.` (that string is from the Redis
   source's wording and has not been diffed against a live server). Fewer than
   three arguments is the wrong-arity error, which is what `XREAD STREAMS k` gets.
-- **Not supported yet**, each a `-ERR syntax error` for now: reading more than
-  one stream in a single call, `COUNT`, `BLOCK`, and `$` as an id — `$` is an
-  invalid id rather than a syntax error, since it is parsed as one.
+- **Not supported yet**: `COUNT` and `BLOCK`, both a `-ERR syntax error` for now,
+  and `$` as an id, which is an invalid id rather than a syntax error since it is
+  parsed as one.
 
 ### LPOP count
 
