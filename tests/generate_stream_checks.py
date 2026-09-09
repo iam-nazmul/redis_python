@@ -267,8 +267,9 @@ XREAD_CHECKS = [
     {"send": ["XREAD", "s", "0", "0"], "expect": SYNTAX, "label": "STREAMS is required"},
     {"send": ["XREAD", "COUNT", "2", "STREAMS", "s", "0"], "expect": SYNTAX,
      "label": "COUNT is not supported yet"},
-    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "0"], "expect": SYNTAX,
-     "label": "nor is BLOCK"},
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "0"],
+     "expect": stream_reply("s", r50, r51, r60),
+     "label": "BLOCK is accepted and returns at once when there is data"},
     {"send": ["XREAD", "STREAMS", "s", "dup", "0"], "expect": UNBALANCED,
      "label": "two keys and one id is unbalanced"},
 
@@ -319,6 +320,87 @@ XREAD_CHECKS = [
 ]
 
 
+# --- XREAD BLOCK ------------------------------------------------------------
+
+b11 = entry("1-1", "a", "1")
+b22 = entry("2-2", "b", "2")
+b33 = entry("3-3", "c", "3")
+b44 = entry("4-4", "d", "4")
+
+BLOCK_CHECKS = [
+    add("s", "1-1", "a", "1", label="setup: one entry"),
+
+    read_many(["s"], ["0"], stream_reply("s", b11), "a plain read still works"),
+    {"send": ["XREAD", "BLOCK", "100", "STREAMS", "s", "0"], "expect": stream_reply("s", b11),
+     "label": "BLOCK returns at once when there is already data"},
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "0"], "expect": stream_reply("s", b11),
+     "label": "and BLOCK 0 does not wait either"},
+
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "1-1"], "client": "b", "read": False,
+     "label": "a client blocks with no timeout"},
+    {"recv": "b", "timeout": 0.3, "expect": "", "label": "and is still parked"},
+    add("s", "2-2", "b", "2", label="a write arrives"),
+    {"recv": "b", "expect": stream_reply("s", b22), "label": "which wakes it with just that entry"},
+
+    {"send": ["XREAD", "BLOCK", "80", "STREAMS", "s", "9-9"], "client": "c", "read": False,
+     "label": "a client blocks with a timeout"},
+    {"recv": "c", "timeout": 1.0, "expect": NULL_ARRAY, "label": "and times out with a null array"},
+
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "2-2"], "client": "d", "read": False,
+     "label": "two clients block on the same stream"},
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "2-2"], "client": "e", "read": False,
+     "label": "the second of them"},
+    add("s", "3-3", "c", "3", label="one write arrives"),
+    {"recv": "d", "expect": stream_reply("s", b33), "label": "and wakes both: the first"},
+    {"recv": "e", "expect": stream_reply("s", b33),
+     "label": "and the second, unlike BLPOP where one push wakes one client"},
+
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "3-3"], "client": "f", "read": False,
+     "label": "a client blocks on s"},
+    add("other", "1-1", "x", "9", label="a write to a different stream"),
+    {"recv": "f", "timeout": 0.3, "expect": "", "label": "leaves it parked"},
+    add("s", "4-4", "d", "4", label="a write to its own stream"),
+    {"recv": "f", "expect": stream_reply("s", b44), "label": "wakes it"},
+
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "t", "9-9", "0"], "client": "g",
+     "read": False, "label": "blocking on two streams at once"},
+    {"recv": "g", "timeout": 0.3, "expect": "", "label": "with neither having anything"},
+    add("t", "1-1", "y", "7", label="a write to the second stream"),
+    {"recv": "g", "expect": stream_reply("t", entry("1-1", "y", "7")),
+     "label": "reports only the stream that had something"},
+
+    {"send": ["XREAD", "BLOCK", "-1", "STREAMS", "s", "0"],
+     "expect": "-ERR timeout is negative\r\n", "label": "a negative timeout"},
+    {"send": ["XREAD", "BLOCK", "abc", "STREAMS", "s", "0"],
+     "expect": "-ERR timeout is not an integer or out of range\r\n",
+     "label": "a non-numeric timeout"},
+    {"send": ["XREAD", "BLOCK", "1.5", "STREAMS", "s", "0"],
+     "expect": "-ERR timeout is not an integer or out of range\r\n",
+     "label": "BLOCK is whole milliseconds, unlike BLPOP's seconds"},
+    {"send": ["XREAD", "BLOCK", "STREAMS", "s", "0"],
+     "expect": "-ERR timeout is not an integer or out of range\r\n",
+     "label": "BLOCK with no timeout eats the next word"},
+    {"send": ["XREAD", "BLOCK", "100"], "expect": XREAD_ARITY, "label": "BLOCK with no streams"},
+    {"send": ["XREAD", "BLOCK", "100", "STREAMS"], "expect": SYNTAX,
+     "label": "STREAMS with nothing after it"},
+    {"send": ["XREAD", "BLOCK", "100", "STREAMS", "s"], "expect": UNBALANCED,
+     "label": "a key with no id"},
+    {"send": ["XREAD", "BLOCK", "100", "STREAMS", "s", "notanid"], "expect": INVALID,
+     "label": "a malformed id is refused rather than blocked on"},
+    {"send": ["XREAD", "STREAMS", "s", "0", "BLOCK", "100"], "expect": INVALID,
+     "label": "after STREAMS everything is a key or an id, so BLOCK there is not one"},
+    {"send": ["XREAD", "COUNT", "1", "BLOCK", "100", "STREAMS", "s", "0"], "expect": SYNTAX,
+     "label": "COUNT is still not supported"},
+
+    {"send": ["SET", "str", "hello"], "expect": "+OK\r\n", "label": "setup: a string"},
+    {"send": ["XREAD", "BLOCK", "100", "STREAMS", "str", "0"], "expect": WRONGTYPE,
+     "label": "a wrong type is reported rather than blocked on"},
+
+    read_many(["s"], ["0"], stream_reply("s", b11, b22, b33, b44),
+              "the stream reads back in full at the end"),
+]
+
+
 def write(name, checks):
     """One check per line, like the hand-written fixtures."""
     lines = ",\n".join("  " + json.dumps(check) for check in checks)
@@ -329,3 +411,4 @@ def write(name, checks):
 
 write("xrange", checks)
 write("xread", XREAD_CHECKS)
+write("xread_block", BLOCK_CHECKS)

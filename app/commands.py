@@ -21,13 +21,18 @@ from app.store import (
 class Block:
     """A command that cannot answer yet.
 
-    Returned instead of a reply when a client must wait: the server parks the
-    connection on *keys* and answers later, either when one of them gains an
-    element or when the timeout expires.
+    Returned instead of a reply when a client must wait. The server parks the
+    connection and calls *retry* again whenever the keyspace may have changed;
+    the first reply it returns is the answer. None means "still nothing", and a
+    timeout answers with the null array.
+
+    Carrying the retry rather than a list of keys is what lets two commands that
+    wait for different things — an element to pop, an entry to appear — share one
+    waiting mechanism.
     """
 
-    keys: list[bytes]
     timeout: float  # seconds; 0 blocks indefinitely
+    retry: Callable[[Store], bytes | None]
 
 
 Reply = bytes | Block
@@ -56,6 +61,8 @@ UNBALANCED_STREAMS = resp.error(
     b"for each stream key an ID or '$' must be specified."
 )
 INVALID_TIMEOUT = resp.error(b"ERR timeout is not a float or out of range")
+# XREAD's BLOCK is whole milliseconds, so it rejects what BLPOP's seconds accept.
+INVALID_BLOCK = resp.error(b"ERR timeout is not an integer or out of range")
 WRONG_TYPE = resp.error(
     b"WRONGTYPE Operation against a key holding the wrong kind of value"
 )
@@ -246,7 +253,9 @@ def blpop(store: Store, args: resp.Command) -> Reply:
         return NEGATIVE_TIMEOUT
     # Keys are tried in order; the first one holding an element answers at once.
     popped = pop_first_available(store, keys)
-    return popped if popped is not None else Block(keys, timeout)
+    if popped is not None:
+        return popped
+    return Block(timeout, lambda current: pop_first_available(current, keys))
 
 
 def pop_first_available(store: Store, keys: list[bytes]) -> bytes | None:
@@ -466,16 +475,61 @@ def _encode_stream(key: bytes, entries: list[StreamEntry]) -> bytes:
     return resp.array_of([resp.bulk_string(key), _encode_entries(entries)])
 
 
+def _read_streams(
+    store: Store, keys: list[bytes], starts: list[EntryId]
+) -> bytes | None:
+    """The XREAD reply for these streams, or None when none of them has anything.
+
+    None is what a blocking read waits on, so "nothing yet" has to be
+    distinguishable from a reply — which is also why an all-empty read cannot
+    just answer an empty array.
+    """
+    replies = []
+    for key, start in zip(keys, starts):
+        entries = store.get_stream(key).range(start, None)
+        if entries:
+            replies.append(_encode_stream(key, entries))
+    return resp.array_of(replies) if replies else None
+
+
+def _parse_block(args: resp.Command) -> tuple[float | None, int] | bytes:
+    """Read XREAD's options, up to the STREAMS keyword.
+
+    Returns (block timeout in seconds, index of STREAMS), or an error reply. The
+    timeout is None when BLOCK was not given at all, and 0 when it was given as
+    0, which blocks indefinitely.
+    """
+    timeout: float | None = None
+    i = 1
+    while i < len(args) and args[i].upper() != b"STREAMS":
+        if args[i].upper() != b"BLOCK" or i + 1 >= len(args):
+            return SYNTAX_ERROR
+        try:
+            milliseconds = int(args[i + 1])
+        except ValueError:
+            return INVALID_BLOCK
+        if milliseconds < 0:
+            return NEGATIVE_TIMEOUT
+        timeout = milliseconds / 1000
+        i += 2
+    # STREAMS must be there, and must be followed by the streams to read.
+    if i + 1 >= len(args):
+        return SYNTAX_ERROR
+    return timeout, i
+
+
 @command(b"XREAD")
-def xread(store: Store, args: resp.Command) -> bytes:
+def xread(store: Store, args: resp.Command) -> Reply:
     # STREAMS, one key and one id: fewer arguments than that cannot name a read.
     if len(args) < 4:
         return wrong_args(b"XREAD")
-    if args[1].upper() != b"STREAMS":
-        return SYNTAX_ERROR
+    options = _parse_block(args)
+    if isinstance(options, bytes):
+        return options
+    timeout, streams_at = options
     # The keys come first and their ids follow, so the two halves line up by
     # position: STREAMS a b 0 5 reads a from 0 and b from 5.
-    keys_and_ids = args[2:]
+    keys_and_ids = args[streams_at + 1 :]
     if len(keys_and_ids) % 2:
         return UNBALANCED_STREAMS
     half = len(keys_and_ids) // 2
@@ -490,13 +544,12 @@ def xread(store: Store, args: resp.Command) -> bytes:
         starts.append(start)
     # Streams are reported in the order they were asked for, and a stream with
     # nothing new is left out rather than reported empty.
-    replies = []
-    for key, start in zip(keys, starts):
-        entries = store.get_stream(key).range(start, None)
-        if entries:
-            replies.append(_encode_stream(key, entries))
-    # Nothing new anywhere is the null array, not an empty one — the same reply a
-    # blocking XREAD will later use for a timeout.
-    if not replies:
+    reply = _read_streams(store, keys, starts)
+    if reply is not None:
+        return reply
+    # Nothing new anywhere: answer the null array, or wait for it with BLOCK. The
+    # ids were resolved above, so the wait is for entries after the ids the client
+    # named, not after whatever arrives while it waits.
+    if timeout is None:
         return resp.NULL_ARRAY
-    return resp.array_of(replies)
+    return Block(timeout, lambda current: _read_streams(current, keys, starts))

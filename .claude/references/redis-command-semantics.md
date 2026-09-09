@@ -22,7 +22,7 @@ tests and `redis-cli` both compare them literally.
 | `TYPE key` | `+string\r\n`, `+list\r\n`, `+stream\r\n`, or `+none\r\n` for a missing key |
 | `XADD key id field value [...]` | bulk string of the id the entry was stored under; `id` may be `<ms>-<seq>`, `<ms>-*` or `*` |
 | `XRANGE key start end` | array of `[id, [field, value, ...]]` pairs, `*0\r\n` when nothing matches; a bound may be `<ms>`, `<ms>-<seq>`, `-`, or `+` as the end |
-| `XREAD STREAMS key [key ...] id [id ...]` | array of `[key, [entries]]`, one per stream with something newer, or `*-1\r\n` when none has |
+| `XREAD [BLOCK ms] STREAMS key [key ...] id [id ...]` | array of `[key, [entries]]`, one per stream with something newer, or `*-1\r\n` when none has |
 
 `TYPE` is the one command that never answers `-WRONGTYPE`: reporting the type is
 its purpose, so every type is a valid reply. Redis names seven — `string`, `list`,
@@ -163,9 +163,34 @@ has no obvious value here: unlike real Redis, sequences are unbounded ints.
   stream key an ID or '$' must be specified.` (that string is from the Redis
   source's wording and has not been diffed against a live server). Fewer than
   three arguments is the wrong-arity error, which is what `XREAD STREAMS k` gets.
-- **Not supported yet**: `COUNT` and `BLOCK`, both a `-ERR syntax error` for now,
-  and `$` as an id, which is an invalid id rather than a syntax error since it is
-  parsed as one.
+- **Not supported yet**: `COUNT`, a `-ERR syntax error` for now, and `$` as an
+  id, which is an invalid id rather than a syntax error since it is parsed as one.
+
+### XREAD BLOCK
+
+- `BLOCK ms` waits for entries the read did not find; `0` waits indefinitely. A
+  read that already has entries returns them at once and never parks, `BLOCK 0`
+  included.
+- The timeout is **whole milliseconds**, so `BLOCK 1.5` is
+  `-ERR timeout is not an integer or out of range` — where `BLPOP`, whose timeout
+  is in seconds, accepts a fraction and says `float` in its error. A negative
+  timeout is `-ERR timeout is negative` for both.
+- A timeout answers `*-1\r\n`, the same null array a non-blocking read with
+  nothing to report gives.
+- Options come **before** `STREAMS`; everything after it is a key or an id, so
+  `XREAD STREAMS k 0 BLOCK 100` reads `BLOCK` and `100` as ids and fails on them.
+- Anything that would make the read fail — a malformed id, a key of the wrong
+  type — fails it immediately rather than parking.
+- One write wakes **every** client waiting on that stream, unlike `BLPOP`, where
+  one push wakes exactly one waiter: a read takes nothing away from the stream,
+  so there is nothing to hand to one client at another's expense.
+
+`Block` carries the retry the server should call again, not a list of keys, which
+is what lets `BLPOP` and `XREAD` share one waiting mechanism while waiting for
+different things. Two properties no checks file can express, verified by hand
+whenever this path changes: a client that disconnects while parked is dropped and
+its stream keeps the write, and an idle server holding waiters burns no CPU
+(`/proc/<pid>/stat` utime+stime unmoved), proving the loop sleeps in `select`.
 
 ### LPOP count
 
