@@ -163,8 +163,13 @@ has no obvious value here: unlike real Redis, sequences are unbounded ints.
   stream key an ID or '$' must be specified.` (that string is from the Redis
   source's wording and has not been diffed against a live server). Fewer than
   three arguments is the wrong-arity error, which is what `XREAD STREAMS k` gets.
-- **Not supported yet**: `COUNT`, a `-ERR syntax error` for now, and `$` as an
-  id, which is an invalid id rather than a syntax error since it is parsed as one.
+- `$` means the stream's **last id as the command runs**, so the read returns
+  only what arrives after it was sent. It is resolved per key, against the stream
+  named beside it, and a key that does not exist yet resolves to `0-0`, so its
+  first entry counts as new. Only a bare `$` — `$$`, `$-1` and `1-$` are invalid
+  ids. Without `BLOCK` it is nearly always the null array, since nothing can
+  follow the last id yet.
+- **`COUNT` is not supported**, a `-ERR syntax error` for now.
 
 ### XREAD BLOCK
 
@@ -186,6 +191,13 @@ has no obvious value here: unlike real Redis, sequences are unbounded ints.
   `XREAD STREAMS k 0 BLOCK 100` reads `BLOCK` and `100` as ids and fails on them.
 - Anything that would make the read fail — a malformed id, a key of the wrong
   type — fails it immediately rather than parking.
+- Ids, `$` included, are resolved **before** the client parks, and the retry
+  closes over the resolved ids. A read parked on `$` therefore waits for entries
+  after the id the stream held when the command arrived, not after whatever it
+  holds when the retry runs — which is the difference between waking with the
+  first new entry and skipping it.
+- A read that can answer at once does, even when another of its streams was given
+  `$`: `STREAMS a b $ 0` returns `b`'s history immediately rather than parking.
 - One write wakes **every** client waiting on that stream, unlike `BLPOP`, where
   one push wakes exactly one waiter: a read takes nothing away from the stream,
   so there is nothing to hand to one client at another's expense.

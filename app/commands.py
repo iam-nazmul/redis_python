@@ -347,6 +347,9 @@ def xadd(store: Store, args: resp.Command) -> bytes:
     return resp.bulk_string(entry_id.encode())
 
 
+# "$" asks for whatever arrives next: the stream's last id, read when the command
+# runs. Only XREAD takes it, which is why it is not one of the range bounds.
+READ_LATEST = b"$"
 # "-" stands for the smallest id a stream can hold. Redis takes it as either
 # bound, not only as the start, so it is resolved here rather than positionally.
 RANGE_MINIMUM = b"-"
@@ -534,10 +537,15 @@ def xread(store: Store, args: resp.Command) -> Reply:
         return UNBALANCED_STREAMS
     half = len(keys_and_ids) // 2
     keys, raw_ids = keys_and_ids[:half], keys_and_ids[half:]
-    # Every id is parsed before any stream is read, so one malformed id fails the
-    # whole command rather than a prefix of it.
+    # Every id is resolved before any stream is read, so one malformed id fails the
+    # whole command rather than a prefix of it. "$" is resolved here too, against
+    # the stream as it stands now: a read that then parks waits for entries added
+    # after the command arrived, not after it happens to be retried.
     starts = []
-    for raw_id in raw_ids:
+    for key, raw_id in zip(keys, raw_ids):
+        if raw_id == READ_LATEST:
+            starts.append(_after(store.get_stream(key).last_id))
+            continue
         start = _parse_read_start(raw_id)
         if start is None:
             return INVALID_ENTRY_ID

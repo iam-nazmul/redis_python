@@ -259,7 +259,11 @@ XREAD_CHECKS = [
     read("s", "", INVALID, "nor an empty id"),
     read("s", "-", INVALID, "- is an XRANGE bound, not an XREAD id"),
     read("s", "+", INVALID, "and so is +"),
-    read("s", "$", INVALID, "$ is not supported yet"),
+    read("s", "$", NULL_ARRAY, "$ means the last id, so a plain read finds nothing after it"),
+    read("nokey", "$", NULL_ARRAY, "$ on a missing key is the same"),
+    read("s", "$$", INVALID, "only a bare $ is the shorthand"),
+    read("s", "$-1", INVALID, "nor does it take a sequence"),
+    read("s", "1-$", INVALID, "nor stand in for one"),
 
     {"send": ["XREAD"], "expect": XREAD_ARITY, "label": "no arguments"},
     {"send": ["XREAD", "STREAMS"], "expect": XREAD_ARITY, "label": "STREAMS with nothing after it"},
@@ -409,7 +413,44 @@ BLOCK_CHECKS = [
     {"recv": "h", "expect": stream_reply("z", entry("1-1", "z", "1")),
      "label": "and wakes it, however long it waited"},
 
-    read_many(["s"], ["0"], stream_reply("s", b11, b22, b33, b44),
+    # "$" is the stream's last id at the moment the command runs.
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "$"], "client": "j", "read": False,
+     "label": "a client blocks from $"},
+    {"recv": "j", "timeout": 0.3, "expect": "", "label": "and waits: $ is already the last id"},
+    add("s", "5-5", "e", "5", label="a write arrives"),
+    {"recv": "j", "expect": stream_reply("s", entry("5-5", "e", "5")),
+     "label": "which wakes it with only the new entry, not the four before it"},
+
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "$"], "client": "k", "read": False,
+     "label": "$ is resolved when the command arrives"},
+    # This recv is also a barrier: "read": False does not wait, so without it the
+    # write below can reach the server first and $ resolves past it.
+    {"recv": "k", "timeout": 0.3, "expect": "", "label": "parked before the writes"},
+    add("s", "6-6", "f", "6", label="the first write after that"),
+    add("s", "7-7", "g", "7", label="and a second, before the reply is read"),
+    {"recv": "k", "expect": stream_reply("s", entry("6-6", "f", "6")),
+     "label": "so the wake carries the first write, not both"},
+    read_many(["s"], ["6-6"], stream_reply("s", entry("7-7", "g", "7")),
+              "and the second is still there to be read"),
+
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "fresh", "$"], "client": "l", "read": False,
+     "label": "$ on a key that does not exist yet"},
+    {"recv": "l", "timeout": 0.3, "expect": "", "label": "parked before the write"},
+    add("fresh", "1-1", "a", "1", label="the stream is created under it"),
+    {"recv": "l", "expect": stream_reply("fresh", entry("1-1", "a", "1")),
+     "label": "and the first entry wakes it"},
+
+    add("history", "1-1", "old", "1", label="setup: a stream with history"),
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "history", "$", "0"], "client": "m",
+     "expect": stream_reply("history", entry("1-1", "old", "1")),
+     "label": "$ on one stream does not stop another from answering at once"},
+    {"send": ["XREAD", "BLOCK", "100", "STREAMS", "str", "$"], "expect": WRONGTYPE,
+     "label": "$ on a wrong type is still the type error"},
+
+    read_many(["s"], ["0"], stream_reply("s", b11, b22, b33, b44,
+                                         entry("5-5", "e", "5"),
+                                         entry("6-6", "f", "6"),
+                                         entry("7-7", "g", "7")),
               "the stream reads back in full at the end"),
 ]
 

@@ -41,5 +41,22 @@
   {"recv": "h", "timeout": 1.5, "expect": "", "label": "the indefinite one is untouched by that deadline, 1.5s on"},
   {"send": ["XADD", "z", "1-1", "z", "1"], "expect": "$3\r\n1-1\r\n", "label": "a write finally arrives"},
   {"recv": "h", "expect": "*1\r\n*2\r\n$1\r\nz\r\n*1\r\n*2\r\n$3\r\n1-1\r\n*2\r\n$1\r\nz\r\n$1\r\n1\r\n", "label": "and wakes it, however long it waited"},
-  {"send": ["XREAD", "STREAMS", "s", "0"], "expect": "*1\r\n*2\r\n$1\r\ns\r\n*4\r\n*2\r\n$3\r\n1-1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n*2\r\n$3\r\n2-2\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n*2\r\n$3\r\n3-3\r\n*2\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$3\r\n4-4\r\n*2\r\n$1\r\nd\r\n$1\r\n4\r\n", "label": "the stream reads back in full at the end"}
+  {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "$"], "client": "j", "read": false, "label": "a client blocks from $"},
+  {"recv": "j", "timeout": 0.3, "expect": "", "label": "and waits: $ is already the last id"},
+  {"send": ["XADD", "s", "5-5", "e", "5"], "expect": "$3\r\n5-5\r\n", "label": "a write arrives"},
+  {"recv": "j", "expect": "*1\r\n*2\r\n$1\r\ns\r\n*1\r\n*2\r\n$3\r\n5-5\r\n*2\r\n$1\r\ne\r\n$1\r\n5\r\n", "label": "which wakes it with only the new entry, not the four before it"},
+  {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "$"], "client": "k", "read": false, "label": "$ is resolved when the command arrives"},
+  {"recv": "k", "timeout": 0.3, "expect": "", "label": "parked before the writes"},
+  {"send": ["XADD", "s", "6-6", "f", "6"], "expect": "$3\r\n6-6\r\n", "label": "the first write after that"},
+  {"send": ["XADD", "s", "7-7", "g", "7"], "expect": "$3\r\n7-7\r\n", "label": "and a second, before the reply is read"},
+  {"recv": "k", "expect": "*1\r\n*2\r\n$1\r\ns\r\n*1\r\n*2\r\n$3\r\n6-6\r\n*2\r\n$1\r\nf\r\n$1\r\n6\r\n", "label": "so the wake carries the first write, not both"},
+  {"send": ["XREAD", "STREAMS", "s", "6-6"], "expect": "*1\r\n*2\r\n$1\r\ns\r\n*1\r\n*2\r\n$3\r\n7-7\r\n*2\r\n$1\r\ng\r\n$1\r\n7\r\n", "label": "and the second is still there to be read"},
+  {"send": ["XREAD", "BLOCK", "0", "STREAMS", "fresh", "$"], "client": "l", "read": false, "label": "$ on a key that does not exist yet"},
+  {"recv": "l", "timeout": 0.3, "expect": "", "label": "parked before the write"},
+  {"send": ["XADD", "fresh", "1-1", "a", "1"], "expect": "$3\r\n1-1\r\n", "label": "the stream is created under it"},
+  {"recv": "l", "expect": "*1\r\n*2\r\n$5\r\nfresh\r\n*1\r\n*2\r\n$3\r\n1-1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n", "label": "and the first entry wakes it"},
+  {"send": ["XADD", "history", "1-1", "old", "1"], "expect": "$3\r\n1-1\r\n", "label": "setup: a stream with history"},
+  {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "history", "$", "0"], "client": "m", "expect": "*1\r\n*2\r\n$7\r\nhistory\r\n*1\r\n*2\r\n$3\r\n1-1\r\n*2\r\n$3\r\nold\r\n$1\r\n1\r\n", "label": "$ on one stream does not stop another from answering at once"},
+  {"send": ["XREAD", "BLOCK", "100", "STREAMS", "str", "$"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "$ on a wrong type is still the type error"},
+  {"send": ["XREAD", "STREAMS", "s", "0"], "expect": "*1\r\n*2\r\n$1\r\ns\r\n*7\r\n*2\r\n$3\r\n1-1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n*2\r\n$3\r\n2-2\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n*2\r\n$3\r\n3-3\r\n*2\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$3\r\n4-4\r\n*2\r\n$1\r\nd\r\n$1\r\n4\r\n*2\r\n$3\r\n5-5\r\n*2\r\n$1\r\ne\r\n$1\r\n5\r\n*2\r\n$3\r\n6-6\r\n*2\r\n$1\r\nf\r\n$1\r\n6\r\n*2\r\n$3\r\n7-7\r\n*2\r\n$1\r\ng\r\n$1\r\n7\r\n", "label": "the stream reads back in full at the end"}
 ]
