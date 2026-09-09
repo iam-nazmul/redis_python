@@ -1,17 +1,24 @@
-"""Regenerate tests/checks/xrange.json.
+"""Regenerate the stream query fixtures: xrange.json and xread.json.
 
-    python tests/generate_xrange_checks.py
+    python tests/generate_stream_checks.py
 
-The RESP is computed rather than written out: XRANGE replies are arrays of
-arrays, where a miscounted $<n> is easy to write and almost invisible to read.
-Edit this file and rerun it rather than editing the JSON by hand.
+The RESP is computed rather than written out: these replies nest arrays two and
+three deep, where a miscounted $<n> is easy to write and almost invisible to
+read. Edit this file and rerun it rather than editing the JSON by hand.
 """
 
 import json
 
 INVALID = "-ERR Invalid stream ID specified as stream command argument\r\n"
 WRONGTYPE = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
-ARITY = "-ERR wrong number of arguments for 'xrange' command\r\n"
+XRANGE_ARITY = "-ERR wrong number of arguments for 'xrange' command\r\n"
+XREAD_ARITY = "-ERR wrong number of arguments for 'xread' command\r\n"
+SYNTAX = "-ERR syntax error\r\n"
+UNBALANCED = (
+    "-ERR Unbalanced XREAD list of streams: "
+    "for each stream key an ID or '$' must be specified.\r\n"
+)
+NULL_ARRAY = "*-1\r\n"
 
 
 def bulk(value):
@@ -34,6 +41,15 @@ def add(key, entry_id, *fields, label):
 
 def query(key, start, end, expect, label):
     return {"send": ["XRANGE", key, start, end], "expect": expect, "label": label}
+
+
+def read(key, entry_id, expect, label):
+    return {"send": ["XREAD", "STREAMS", key, entry_id], "expect": expect, "label": label}
+
+
+def stream_reply(key, *entries):
+    """The XREAD reply for one stream: [[key, [entries...]]]."""
+    return f"*1\r\n*2\r\n{bulk(key)}*{len(entries)}\r\n" + "".join(entries)
 
 
 checks = []
@@ -170,18 +186,94 @@ for bad, label in [
     checks.append(query("s", "0", bad, INVALID, f"invalid end: {label}"))
 
 checks += [
-    {"send": ["XRANGE"], "expect": ARITY, "label": "no arguments"},
-    {"send": ["XRANGE", "s"], "expect": ARITY, "label": "key only"},
-    {"send": ["XRANGE", "s", "0"], "expect": ARITY, "label": "no end"},
-    {"send": ["XRANGE", "s", "0", "9", "COUNT", "1"], "expect": ARITY,
+    {"send": ["XRANGE"], "expect": XRANGE_ARITY, "label": "no arguments"},
+    {"send": ["XRANGE", "s"], "expect": XRANGE_ARITY, "label": "key only"},
+    {"send": ["XRANGE", "s", "0"], "expect": XRANGE_ARITY, "label": "no end"},
+    {"send": ["XRANGE", "s", "0", "9", "COUNT", "1"], "expect": XRANGE_ARITY,
      "label": "COUNT is not supported yet"},
     query("s", "6", "6", reply(e60), "the stream still reads correctly after the errors"),
     {"send": ["XRANGE", "s", "6", "6"], "client": "b", "expect": reply(e60),
      "label": "a second client sees the same entries"},
 ]
 
-# One check per line, like the hand-written fixtures.
-lines = ",\n".join("  " + json.dumps(check) for check in checks)
-with open("tests/checks/xrange.json", "w") as handle:
-    handle.write("[\n" + lines + "\n]\n")
-print(f"wrote {len(checks)} checks")
+# --- XREAD ------------------------------------------------------------------
+
+r50 = entry("5-0", "a", "1")
+r51 = entry("5-1", "b", "2")
+r60 = entry("6-0", "c", "3")
+
+XREAD_CHECKS = [
+    add("s", "5-0", "a", "1", label="setup: 5-0"),
+    add("s", "5-1", "b", "2", label="setup: 5-1"),
+    add("s", "6-0", "c", "3", label="setup: 6-0"),
+
+    read("s", "0", stream_reply("s", r50, r51, r60), "everything after 0-0"),
+    read("s", "0-0", stream_reply("s", r50, r51, r60), "the same id written in full"),
+    read("s", "5-0", stream_reply("s", r51, r60), "exclusive: the id given is not returned"),
+    read("s", "5", stream_reply("s", r51, r60), "a bare millisecond means its sequence 0"),
+    read("s", "5-1", stream_reply("s", r60), "reading on from the last id seen"),
+    read("s", "4-9", stream_reply("s", r50, r51, r60), "an id before the stream starts"),
+    read("s", "6-0", NULL_ARRAY, "nothing after the last entry is a null array"),
+    read("s", "99999", NULL_ARRAY, "nor is anything after a later millisecond"),
+    read("s", "6", NULL_ARRAY,
+         "a bare millisecond means -0, which exclusivity then leaves out"),
+
+    {"send": ["xread", "streams", "s", "5-1"], "expect": stream_reply("s", r60),
+     "label": "verb and STREAMS are both case-insensitive"},
+
+    add("dup", "1-1", "a", "1", "a", "2", label="setup: a repeated field name"),
+    read("dup", "0", stream_reply("dup", entry("1-1", "a", "1", "a", "2")),
+         "fields keep their order inside the reply"),
+    add("bin", "1-1", "f\r\nx", "a\x00b", label="setup: binary field and value"),
+    read("bin", "0", stream_reply("bin", entry("1-1", "f\r\nx", "a\x00b")),
+         "binary-safe through the reply"),
+    add("big", "99999999999999999999-0", "f", "v", label="setup: a 20-digit id"),
+    read("big", "99999999999999999998", stream_reply("big", entry("99999999999999999999-0", "f", "v")),
+         "ids past 64 bits compare as numbers"),
+
+    read("nokey", "0", NULL_ARRAY, "a missing key reads as a null array"),
+    {"send": ["TYPE", "nokey"], "expect": "+none\r\n", "label": "and XREAD did not create it"},
+
+    {"send": ["SET", "str", "hello"], "expect": "+OK\r\n", "label": "setup: a string"},
+    read("str", "0", WRONGTYPE, "XREAD on a string"),
+    read("str", "notanid", INVALID, "a malformed id is reported before the type"),
+    {"send": ["RPUSH", "list", "a"], "expect": ":1\r\n", "label": "setup: a list"},
+    read("list", "0", WRONGTYPE, "XREAD on a list"),
+
+    read("s", "notanid", INVALID, "letters are not an id"),
+    read("s", "1-x", INVALID, "nor a non-numeric sequence"),
+    read("s", "1-1-1", INVALID, "nor too many parts"),
+    read("s", "", INVALID, "nor an empty id"),
+    read("s", "-", INVALID, "- is an XRANGE bound, not an XREAD id"),
+    read("s", "+", INVALID, "and so is +"),
+    read("s", "$", INVALID, "$ is not supported yet"),
+
+    {"send": ["XREAD"], "expect": XREAD_ARITY, "label": "no arguments"},
+    {"send": ["XREAD", "STREAMS"], "expect": XREAD_ARITY, "label": "STREAMS with nothing after it"},
+    {"send": ["XREAD", "STREAMS", "s"], "expect": XREAD_ARITY, "label": "a key with no id"},
+    {"send": ["XREAD", "s", "0", "0"], "expect": SYNTAX, "label": "STREAMS is required"},
+    {"send": ["XREAD", "COUNT", "2", "STREAMS", "s", "0"], "expect": SYNTAX,
+     "label": "COUNT is not supported yet"},
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "s", "0"], "expect": SYNTAX,
+     "label": "nor is BLOCK"},
+    {"send": ["XREAD", "STREAMS", "s", "dup", "0"], "expect": UNBALANCED,
+     "label": "two keys and one id is unbalanced"},
+    {"send": ["XREAD", "STREAMS", "s", "dup", "0", "0"], "expect": SYNTAX,
+     "label": "reading two streams at once is a later stage"},
+
+    read("s", "5-1", stream_reply("s", r60), "the stream still reads after the errors"),
+    {"send": ["XREAD", "STREAMS", "s", "5-1"], "client": "b", "expect": stream_reply("s", r60),
+     "label": "a second client reads the same entries"},
+]
+
+
+def write(name, checks):
+    """One check per line, like the hand-written fixtures."""
+    lines = ",\n".join("  " + json.dumps(check) for check in checks)
+    with open(f"tests/checks/{name}.json", "w") as handle:
+        handle.write("[\n" + lines + "\n]\n")
+    print(f"wrote {len(checks)} checks to tests/checks/{name}.json")
+
+
+write("xrange", checks)
+write("xread", XREAD_CHECKS)

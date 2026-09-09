@@ -50,6 +50,11 @@ ENTRY_ID_TOO_SMALL = resp.error(
 ENTRY_ID_AT_MINIMUM = resp.error(
     b"ERR The ID specified in XADD must be greater than 0-0"
 )
+# Not diffed against a live server; taken from the Redis source's wording.
+UNBALANCED_STREAMS = resp.error(
+    b"ERR Unbalanced XREAD list of streams: "
+    b"for each stream key an ID or '$' must be specified."
+)
 INVALID_TIMEOUT = resp.error(b"ERR timeout is not a float or out of range")
 WRONG_TYPE = resp.error(
     b"WRONGTYPE Operation against a key holding the wrong kind of value"
@@ -347,6 +352,23 @@ def _after(entry_id: EntryId) -> EntryId:
     return EntryId(entry_id.milliseconds, entry_id.sequence + 1)
 
 
+def _split_id(raw: bytes) -> tuple[int, int | None] | None:
+    """The parts of "<ms>" or "<ms>-<seq>", or None when *raw* is neither.
+
+    The sequence is None when the id named only a millisecond, which each caller
+    fills in differently: 0 for a query's start, the rest of the millisecond for
+    its end.
+    """
+    milliseconds, _, sequence = raw.partition(b"-")
+    if not milliseconds.isdigit():
+        return None
+    if not sequence:
+        return int(milliseconds), None
+    if not sequence.isdigit():
+        return None
+    return int(milliseconds), int(sequence)
+
+
 def _parse_range_start(raw: bytes) -> EntryId | None:
     """The inclusive lower bound of an XRANGE, or None when it is not an id.
 
@@ -354,14 +376,11 @@ def _parse_range_start(raw: bytes) -> EntryId | None:
     """
     if raw == RANGE_MINIMUM:
         return MIN_ENTRY_ID
-    milliseconds, _, sequence = raw.partition(b"-")
-    if not milliseconds.isdigit():
+    parts = _split_id(raw)
+    if parts is None:
         return None
-    if not sequence:
-        return EntryId(int(milliseconds), 0)
-    if not sequence.isdigit():
-        return None
-    return EntryId(int(milliseconds), int(sequence))
+    milliseconds, sequence = parts
+    return EntryId(milliseconds, 0 if sequence is None else sequence)
 
 
 def _parse_range_end(raw: bytes) -> EntryId | None:
@@ -374,14 +393,13 @@ def _parse_range_end(raw: bytes) -> EntryId | None:
     """
     if raw == RANGE_MINIMUM:
         return _after(MIN_ENTRY_ID)
-    milliseconds, _, sequence = raw.partition(b"-")
-    if not milliseconds.isdigit():
+    parts = _split_id(raw)
+    if parts is None:
         return None
-    if not sequence:
-        return EntryId(int(milliseconds) + 1, 0)
-    if not sequence.isdigit():
-        return None
-    return _after(EntryId(int(milliseconds), int(sequence)))
+    milliseconds, sequence = parts
+    if sequence is None:
+        return EntryId(milliseconds + 1, 0)
+    return _after(EntryId(milliseconds, sequence))
 
 
 def _encode_entry(entry: StreamEntry) -> bytes:
@@ -389,6 +407,10 @@ def _encode_entry(entry: StreamEntry) -> bytes:
     return resp.array_of(
         [resp.bulk_string(entry.id.encode()), resp.array(entry.fields)]
     )
+
+
+def _encode_entries(entries: list[StreamEntry]) -> bytes:
+    return resp.array_of([_encode_entry(entry) for entry in entries])
 
 
 def _parse_range(start: bytes, end: bytes) -> tuple[EntryId, EntryId | None] | None:
@@ -422,5 +444,40 @@ def xrange(store: Store, args: resp.Command) -> bytes:
     if bounds is None:
         return INVALID_ENTRY_ID
     start, end = bounds
-    entries = store.get_stream(args[1]).range(start, end)
-    return resp.array_of([_encode_entry(entry) for entry in entries])
+    return _encode_entries(store.get_stream(args[1]).range(start, end))
+
+
+def _encode_stream(key: bytes, entries: list[StreamEntry]) -> bytes:
+    """One XREAD element: the stream's key, then the entries read from it."""
+    return resp.array_of([resp.bulk_string(key), _encode_entries(entries)])
+
+
+@command(b"XREAD")
+def xread(store: Store, args: resp.Command) -> bytes:
+    # STREAMS, one key and one id: fewer arguments than that cannot name a read.
+    if len(args) < 4:
+        return wrong_args(b"XREAD")
+    if args[1].upper() != b"STREAMS":
+        return SYNTAX_ERROR
+    keys_and_ids = args[2:]
+    if len(keys_and_ids) % 2:
+        return UNBALANCED_STREAMS
+    if len(keys_and_ids) != 2:
+        # Reading several streams at once is a later stage; until then the only
+        # shape this understands is one key and one id.
+        return SYNTAX_ERROR
+    key, raw_id = keys_and_ids
+    parts = _split_id(raw_id)
+    if parts is None:
+        return INVALID_ENTRY_ID
+    milliseconds, sequence = parts
+    # XREAD is exclusive where XRANGE is inclusive, so it starts just past the id
+    # it was given and runs to the end of the stream.
+    after = _after(EntryId(milliseconds, 0 if sequence is None else sequence))
+    entries = store.get_stream(key).range(after, None)
+    # A stream with nothing new is left out of the reply entirely, and with only
+    # one stream to report that leaves nothing at all: a null array, not an empty
+    # one, which is how a blocking XREAD will later say it timed out.
+    if not entries:
+        return resp.NULL_ARRAY
+    return resp.array_of([_encode_stream(key, entries)])

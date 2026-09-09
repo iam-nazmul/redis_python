@@ -22,6 +22,7 @@ tests and `redis-cli` both compare them literally.
 | `TYPE key` | `+string\r\n`, `+list\r\n`, `+stream\r\n`, or `+none\r\n` for a missing key |
 | `XADD key id field value [...]` | bulk string of the id the entry was stored under; `id` may be `<ms>-<seq>`, `<ms>-*` or `*` |
 | `XRANGE key start end` | array of `[id, [field, value, ...]]` pairs, `*0\r\n` when nothing matches; a bound may be `<ms>`, `<ms>-<seq>`, `-`, or `+` as the end |
+| `XREAD STREAMS key id` | array of one `[key, [entries]]`, or `*-1\r\n` when the stream has nothing newer |
 
 `TYPE` is the one command that never answers `-WRONGTYPE`: reporting the type is
 its purpose, so every type is a valid reply. Redis names seven — `string`, `list`,
@@ -136,6 +137,27 @@ Internally the end bound is turned into the id *just past* the last one wanted �
 `5-3` becomes `5-4`, a bare `5` becomes `6-0` — so `Stream.range` can take a
 half-open interval. That avoids inventing a largest sequence for the bare form, which
 has no obvious value here: unlike real Redis, sequences are unbounded ints.
+
+### XREAD
+
+- **Exclusive**, where `XRANGE` is inclusive: `XREAD STREAMS k 5-0` returns the
+  entries *after* `5-0`. A bare `<ms>` means sequence 0, so `k 6` excludes `6-0`
+  itself — the same id, read differently by the two commands.
+- The reply nests one level deeper than `XRANGE`: an array of streams, each
+  `[key, [entry, ...]]`. A stream with nothing new is left out, and with a single
+  stream that leaves nothing to report, so the reply is the **null array**
+  `*-1\r\n` rather than an empty one. A blocking `XREAD` will use the same reply
+  for a timeout.
+- Ids are strict: no `-`, `+` or `*`. Those are `-ERR Invalid stream ID specified
+  as stream command argument`.
+- Not `STREAMS` where it is expected is `-ERR syntax error`; an odd number of
+  keys and ids after it is `-ERR Unbalanced XREAD list of streams: for each
+  stream key an ID or '$' must be specified.` (that string is from the Redis
+  source's wording and has not been diffed against a live server). Fewer than
+  three arguments is the wrong-arity error, which is what `XREAD STREAMS k` gets.
+- **Not supported yet**, each a `-ERR syntax error` for now: reading more than
+  one stream in a single call, `COUNT`, `BLOCK`, and `$` as an id — `$` is an
+  invalid id rather than a syntax error, since it is parsed as one.
 
 ### LPOP count
 
