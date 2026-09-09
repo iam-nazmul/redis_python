@@ -62,6 +62,16 @@ class Stream:
             return EntryId(milliseconds, self.last_id.sequence + 1)
         return EntryId(milliseconds, 0)
 
+    def next_id_from_clock(self, milliseconds: int) -> EntryId:
+        """The id for a fully generated "*", from the clock reading *milliseconds*.
+
+        The clock is clamped forward to the last id's millisecond first, so a
+        clock that has moved backwards — or a stream carrying an explicit id from
+        the future — still yields an id that advances. That is what makes "*" the
+        one id form that cannot fail: it always lands past the last entry.
+        """
+        return self.next_id(max(milliseconds, self.last_id.milliseconds))
+
     def append(self, entry_id: EntryId, fields: list[bytes]) -> EntryId:
         """Append an entry, or raise StreamOrderError if the id does not advance."""
         if entry_id <= self.last_id:
@@ -86,6 +96,16 @@ class StreamOrderError(Exception):
 def now_ms() -> float:
     """The monotonic clock in milliseconds, unaffected by system clock changes."""
     return time.monotonic() * 1000
+
+
+def unix_ms() -> int:
+    """Wall-clock Unix time in milliseconds.
+
+    Deliberately not now_ms. Expiry needs a clock that cannot jump, but a stream
+    id is a timestamp clients read and compare against their own wall clock, so it
+    has to track the system clock even though that one can move backwards.
+    """
+    return int(time.time() * 1000)
 
 
 @dataclass

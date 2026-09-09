@@ -22,7 +22,6 @@
   {"send": ["XADD", "big", "99999999999999999999-*", "f", "v"], "expect": "$22\r\n99999999999999999999-0\r\n", "label": "generation past 64 bits"},
   {"send": ["XADD", "big", "99999999999999999999-*", "f", "v"], "expect": "$22\r\n99999999999999999999-1\r\n", "label": "and it carries on"},
 
-  {"send": ["XADD", "bad", "*", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "a bare * is still not generated"},
   {"send": ["XADD", "bad", "*-*", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "the time part must be digits"},
   {"send": ["XADD", "bad", "*-0", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "even with an explicit sequence"},
   {"send": ["XADD", "bad", "5-**", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "only a single star stands in for the sequence"},

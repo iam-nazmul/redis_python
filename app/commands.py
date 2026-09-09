@@ -12,6 +12,7 @@ from app.store import (
     StreamOrderError,
     WrongTypeError,
     now_ms,
+    unix_ms,
 )
 
 
@@ -267,33 +268,37 @@ def llen(store: Store, args: resp.Command) -> bytes:
 class RequestedEntryId:
     """An entry id as the client wrote it, with the parts it left to the server.
 
-    Only the sequence can be left out so far; "*", which leaves out the time part
-    as well, is still rejected as invalid.
+    Both parts may be left out: "<ms>-*" gives up the sequence, and a bare "*"
+    gives up the time part too, which is the only case the clock is read for.
     """
 
-    milliseconds: int
+    milliseconds: int | None  # None when the client wrote a bare "*"
     sequence: int | None  # None when the client wrote "*" in its place
 
     def explicit_id(self) -> EntryId | None:
         """The id the client spelled out, or None when it left a part to us."""
-        if self.sequence is None:
+        if self.milliseconds is None or self.sequence is None:
             return None
         return EntryId(self.milliseconds, self.sequence)
 
     def resolve(self, stream: Stream) -> EntryId:
-        """The id to store under, generating the sequence if it was left out."""
+        """The id to store under, generating whichever parts were left out."""
         explicit = self.explicit_id()
         if explicit is not None:
             return explicit
+        if self.milliseconds is None:
+            return stream.next_id_from_clock(unix_ms())
         return stream.next_id(self.milliseconds)
 
 
 def _parse_entry_id(raw: bytes) -> RequestedEntryId | None:
-    """Parse "<ms>-<seq>" or "<ms>-*", or None when it is neither.
+    """Parse "<ms>-<seq>", "<ms>-*" or a bare "*", or None when it is none of them.
 
-    Deliberately strict about what is left: the time part must always be digits,
-    so a bare "*" is rejected until this server can generate one.
+    A star stands in for a whole part or not at all: "*-*", "5-1*" and "5-**" are
+    invalid rather than requests to generate something.
     """
+    if raw == b"*":
+        return RequestedEntryId(None, None)
     milliseconds, separator, sequence = raw.partition(b"-")
     if not (separator and milliseconds.isdigit()):
         return None
