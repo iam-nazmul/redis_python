@@ -333,11 +333,23 @@ def xadd(store: Store, args: resp.Command) -> bytes:
     return resp.bulk_string(entry_id.encode())
 
 
+# "-" stands for the smallest id a stream can hold. Redis takes it as either
+# bound, not only as the start, so it is resolved here rather than positionally.
+RANGE_MINIMUM = b"-"
+
+
+def _after(entry_id: EntryId) -> EntryId:
+    """The id immediately after *entry_id*, which turns an inclusive end exclusive."""
+    return EntryId(entry_id.milliseconds, entry_id.sequence + 1)
+
+
 def _parse_range_start(raw: bytes) -> EntryId | None:
     """The inclusive lower bound of an XRANGE, or None when it is not an id.
 
     A bare "<ms>" means the whole millisecond, so its sequence defaults to 0.
     """
+    if raw == RANGE_MINIMUM:
+        return MIN_ENTRY_ID
     milliseconds, _, sequence = raw.partition(b"-")
     if not milliseconds.isdigit():
         return None
@@ -356,6 +368,8 @@ def _parse_range_end(raw: bytes) -> EntryId | None:
     sequences here have no ceiling — each form is turned into the id just past
     the last one it asks for: "5-3" ends before 5-4, and "5" before 6-0.
     """
+    if raw == RANGE_MINIMUM:
+        return _after(MIN_ENTRY_ID)
     milliseconds, _, sequence = raw.partition(b"-")
     if not milliseconds.isdigit():
         return None
@@ -363,7 +377,7 @@ def _parse_range_end(raw: bytes) -> EntryId | None:
         return EntryId(int(milliseconds) + 1, 0)
     if not sequence.isdigit():
         return None
-    return EntryId(int(milliseconds), int(sequence) + 1)
+    return _after(EntryId(int(milliseconds), int(sequence)))
 
 
 def _encode_entry(entry: StreamEntry) -> bytes:
