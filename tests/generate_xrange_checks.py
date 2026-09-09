@@ -114,10 +114,29 @@ checks += [
           "- reaches a 20-digit first entry"),
     query("nokey", "-", "9", reply(), "- on a missing key"),
     query("s", "-", "notanid", INVALID, "- does not excuse a malformed end"),
-    query("s", "-", "+", INVALID, "+ is not accepted yet"),
-    query("s", "+", "9", INVALID, "nor as a start"),
     query("s", "--", "9", INVALID, "only a single dash is the minimum"),
     query("s", " -", "9", INVALID, "no whitespace around it"),
+]
+
+# "+" runs to the last entry, and is the end bound only.
+checks += [
+    query("s", "-", "+", reply(e50, e51, e59, e60, e75), "- to + is the whole stream"),
+    query("s", "5", "+", reply(e50, e51, e59, e60, e75), "a bare start through to +"),
+    query("s", "5-1", "+", reply(e51, e59, e60, e75), "an explicit start through to +"),
+    query("s", "6", "+", reply(e60, e75), "+ from a later millisecond"),
+    query("s", "7-6", "+", reply(), "+ from past the last entry is empty"),
+    query("s", "99999", "+", reply(), "+ from a millisecond beyond the stream"),
+    query("big", "-", "+", reply(entry("99999999999999999999-0", "f", "v"),
+                                 entry("99999999999999999999-1", "f", "v")),
+          "+ reaches 20-digit ids, which no fixed maximum would cover"),
+    query("nokey", "-", "+", reply(), "+ on a missing key"),
+    query("s", "notanid", "+", INVALID, "+ does not excuse a malformed start"),
+    query("s", "+", "9", INVALID,
+          "+ as a start is refused: unbounded ids have no largest id to bound by"),
+    query("s", "+", "+", INVALID, "including + to +"),
+    query("s", "-", "++", INVALID, "only a single plus is the maximum"),
+    query("s", "-", "+ ", INVALID, "no whitespace around it"),
+    query("s", "-", "1+", INVALID, "nor a plus after digits"),
 ]
 
 # A missing key is an empty array, and querying must not create it.
@@ -133,6 +152,7 @@ checks += [
     query("str", "notanid", "9", INVALID, "a malformed start is reported before the type"),
     query("str", "0", "notanid", INVALID, "and so is a malformed end"),
     query("str", "-", "9", WRONGTYPE, "- on a string still reports the type"),
+    query("str", "-", "+", WRONGTYPE, "and so does - to +"),
     {"send": ["RPUSH", "list", "a"], "expect": ":1\r\n", "label": "setup: a list"},
     query("list", "0", "9", WRONGTYPE, "XRANGE on a list"),
 ]

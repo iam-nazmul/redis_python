@@ -21,7 +21,7 @@ tests and `redis-cli` both compare them literally.
 | `BLPOP key [key ...] timeout` | `*2\r\n` of [key, element], or `*-1\r\n` on timeout |
 | `TYPE key` | `+string\r\n`, `+list\r\n`, `+stream\r\n`, or `+none\r\n` for a missing key |
 | `XADD key id field value [...]` | bulk string of the id the entry was stored under; `id` may be `<ms>-<seq>`, `<ms>-*` or `*` |
-| `XRANGE key start end` | array of `[id, [field, value, ...]]` pairs, `*0\r\n` when nothing matches; a bound may be `<ms>`, `<ms>-<seq>` or `-` |
+| `XRANGE key start end` | array of `[id, [field, value, ...]]` pairs, `*0\r\n` when nothing matches; a bound may be `<ms>`, `<ms>-<seq>`, `-`, or `+` as the end |
 
 `TYPE` is the one command that never answers `-WRONGTYPE`: reporting the type is
 its purpose, so every type is a valid reply. Redis names seven — `string`, `list`,
@@ -122,9 +122,15 @@ an id that advances: `*` on a stream whose last id is `9999999999999999-0` answe
 - `-` stands for the smallest id a stream can hold, `0-0`. Redis accepts it as
   **either** bound, not only as the start, so it is resolved during parsing
   rather than by position: `XRANGE k 0 -` is a valid, always-empty query.
-- **`+` is not accepted yet**, nor is `COUNT`; real Redis takes `+` for the
-  largest id, and `XRANGE key start end COUNT n` to cap the reply. Until then
-  they are an invalid id and a wrong-arity error.
+- `+` runs to the last entry. It is **the end bound only**, and that asymmetry
+  with `-` is real rather than an oversight: `-` is the id `0-0`, while `+` names
+  no id here at all, since ids are unbounded. As an end it drops the upper bound;
+  as a start it would have to bound the range *above* every entry, which needs a
+  largest id this server does not have. Real Redis, whose ids stop at
+  `UINT64_MAX`, accepts `+` as a start and answers the empty array it degenerates
+  to; this server reports an invalid id.
+- **`COUNT` is not supported**; `XRANGE key start end COUNT n` caps the reply in
+  real Redis and is a wrong-arity error here.
 
 Internally the end bound is turned into the id *just past* the last one wanted —
 `5-3` becomes `5-4`, a bare `5` becomes `6-0` — so `Stream.range` can take a

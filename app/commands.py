@@ -336,6 +336,10 @@ def xadd(store: Store, args: resp.Command) -> bytes:
 # "-" stands for the smallest id a stream can hold. Redis takes it as either
 # bound, not only as the start, so it is resolved here rather than positionally.
 RANGE_MINIMUM = b"-"
+# "+" stands for the largest, which has no equivalent here: ids are unbounded, so
+# there is no id to name. It becomes a range with no upper bound, which works
+# only as the end — see _parse_range.
+RANGE_MAXIMUM = b"+"
 
 
 def _after(entry_id: EntryId) -> EntryId:
@@ -387,14 +391,36 @@ def _encode_entry(entry: StreamEntry) -> bytes:
     )
 
 
+def _parse_range(start: bytes, end: bytes) -> tuple[EntryId, EntryId | None] | None:
+    """Both bounds of an XRANGE, or None when either is malformed.
+
+    The end is None for "+", a range with no upper bound. Unlike "-", which is
+    the real id 0-0, "+" names no id at all here, so it can only be the end: as a
+    start it would have to bound the range above every entry, which needs a
+    largest id this server does not have. Real Redis, whose ids stop at
+    UINT64_MAX, accepts it there too and answers the empty array it degenerates
+    to; this server reports an invalid id instead.
+    """
+    parsed_start = _parse_range_start(start)
+    if parsed_start is None:
+        return None
+    if end == RANGE_MAXIMUM:
+        return parsed_start, None
+    parsed_end = _parse_range_end(end)
+    if parsed_end is None:
+        return None
+    return parsed_start, parsed_end
+
+
 @command(b"XRANGE")
 def xrange(store: Store, args: resp.Command) -> bytes:
     if len(args) != 4:
         return wrong_args(b"XRANGE")
-    start, end = _parse_range_start(args[2]), _parse_range_end(args[3])
-    if start is None or end is None:
-        return INVALID_ENTRY_ID
     # Both bounds are parsed before the key is looked at, as in XADD, so a
     # malformed id is reported ahead of -WRONGTYPE.
+    bounds = _parse_range(args[2], args[3])
+    if bounds is None:
+        return INVALID_ENTRY_ID
+    start, end = bounds
     entries = store.get_stream(args[1]).range(start, end)
     return resp.array_of([_encode_entry(entry) for entry in entries])

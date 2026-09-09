@@ -73,7 +73,7 @@ class Stream:
         """
         return self.next_id(max(milliseconds, self.last_id.milliseconds))
 
-    def range(self, start: EntryId, end: EntryId) -> list[StreamEntry]:
+    def range(self, start: EntryId, end: EntryId | None) -> list[StreamEntry]:
         """The entries from *start* inclusive up to *end* exclusive.
 
         An exclusive end because XRANGE's own end is inclusive but may name only a
@@ -81,10 +81,16 @@ class Stream:
         it — sequences here are unbounded ints. The caller turns either form into
         the id just past the last one it wants, which is exact for integers.
 
+        *end* is None for a range with no upper bound at all, which is what "+"
+        asks for: with unbounded ids there is no largest id to end at, so the
+        range runs to the last entry instead.
+
         Entries are appended in ascending id order, so the bounds can be found by
         bisection rather than by scanning the whole stream.
         """
         first = bisect_left(self.entries, start, key=lambda entry: entry.id)
+        if end is None:
+            return self.entries[first:]
         last = bisect_left(self.entries, end, key=lambda entry: entry.id)
         return self.entries[first:last]
 
