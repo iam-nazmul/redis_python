@@ -36,10 +36,32 @@ class Block:
     retry: Callable[[Store], bytes | None]
 
 
+@dataclass
+class Session:
+    """The per-connection state a command may need, beyond the keyspace.
+
+    So far that is the transaction: the commands queued by a MULTI, or None when
+    the connection is not inside one. One Session belongs to one connection, which
+    is what keeps one client's transaction invisible to every other client.
+    """
+
+    queued: list[resp.Command] | None = None
+
+    @property
+    def in_transaction(self) -> bool:
+        return self.queued is not None
+
+
 Reply = bytes | Block
 Handler = Callable[[Store, resp.Command], Reply]
+# MULTI and EXEC act on the connection rather than the keyspace, so they get the
+# session as well. Two tables rather than one wider signature: every other command
+# stays reachable with nothing but a Store, which is what makes it testable
+# without a connection to run it on.
+SessionHandler = Callable[[Session, Store, resp.Command], Reply]
 
 _HANDLERS: dict[bytes, Handler] = {}
+_SESSION_HANDLERS: dict[bytes, SessionHandler] = {}
 
 PONG = resp.simple_string(b"PONG Nazmul")
 SYNTAX_ERROR = resp.error(b"ERR syntax error")
@@ -58,6 +80,7 @@ ENTRY_ID_AT_MINIMUM = resp.error(
 )
 # Not diffed against a live server; taken from the Redis source's wording.
 EXEC_WITHOUT_MULTI = resp.error(b"ERR EXEC without MULTI")
+NESTED_MULTI = resp.error(b"ERR MULTI calls can not be nested")
 UNBALANCED_STREAMS = resp.error(
     b"ERR Unbalanced XREAD list of streams: "
     b"for each stream key an ID or '$' must be specified."
@@ -80,17 +103,30 @@ def command(name: bytes) -> Callable[[Handler], Handler]:
     return register
 
 
+def session_command(name: bytes) -> Callable[[SessionHandler], SessionHandler]:
+    """Register a handler for a command that acts on the connection."""
+
+    def register(handler: SessionHandler) -> SessionHandler:
+        _SESSION_HANDLERS[name] = handler
+        return handler
+
+    return register
+
+
 def wrong_args(name: bytes) -> bytes:
     return resp.error(b"ERR wrong number of arguments for '%s' command" % name.lower())
 
 
-def execute(store: Store, args: resp.Command) -> Reply:
+def execute(store: Store, args: resp.Command, session: Session) -> Reply:
     """Run one command and return the reply, or a Block if it must wait."""
     name = args[0].upper()
+    session_handler = _SESSION_HANDLERS.get(name)
     handler = _HANDLERS.get(name)
-    if handler is None:
+    if session_handler is None and handler is None:
         return resp.error(b"ERR unknown command '%s'" % args[0])
     try:
+        if session_handler is not None:
+            return session_handler(session, store, args)
         return handler(store, args)
     except WrongTypeError:
         return WRONG_TYPE
@@ -575,22 +611,30 @@ def incr(store: Store, args: resp.Command) -> bytes:
         return NOT_AN_INTEGER
 
 
-@command(b"MULTI")
-def multi(store: Store, args: resp.Command) -> bytes:
+@session_command(b"MULTI")
+def multi(session: Session, store: Store, args: resp.Command) -> bytes:
     if len(args) != 1:
         return wrong_args(b"MULTI")
-    # Only the reply so far. Queueing what follows needs per-connection state,
-    # which a handler cannot reach: it is given the keyspace and its arguments,
-    # deliberately, so that it stays testable without a socket. That is the next
-    # stage's problem, and until then MULTI says OK and changes nothing.
+    # A nested MULTI is refused rather than accepted: reopening would have to
+    # decide what happens to the queue it already holds, and dropping a client's
+    # queued commands is not something to invent.
+    if session.in_transaction:
+        return NESTED_MULTI
+    # An empty queue, which is what makes the transaction open: the commands that
+    # follow are still run as they arrive, until queueing lands in a later stage.
+    session.queued = []
     return resp.OK
 
 
-@command(b"EXEC")
-def exec_(store: Store, args: resp.Command) -> bytes:
+@session_command(b"EXEC")
+def exec_(session: Session, store: Store, args: resp.Command) -> bytes:
     if len(args) != 1:
         return wrong_args(b"EXEC")
-    # Always the error for now: MULTI only replies, so no connection is ever in a
-    # transaction and every EXEC that arrives is one without it. Once MULTI opens
-    # a transaction, this grows the branch that runs the queued commands.
-    return EXEC_WITHOUT_MULTI
+    if not session.in_transaction:
+        return EXEC_WITHOUT_MULTI
+    # The transaction closes whatever it ran, so a second EXEC is one without a
+    # MULTI again.
+    session.queued = None
+    # One reply per command the transaction queued. Nothing can be queued yet, so
+    # this is always the empty array: the transaction ran, and had nothing to do.
+    return resp.array_of([])

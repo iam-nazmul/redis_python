@@ -13,8 +13,8 @@ tests and `redis-cli` both compare them literally.
 | `SET key value [EX s\|PX ms] [NX\|XX]` | `+OK\r\n`, or `$-1\r\n` when NX/XX refuses the write |
 | `GET key` | bulk string, or `$-1\r\n` when missing or expired |
 | `INCR key` | `:<new value>\r\n`; a missing key starts at `:1\r\n` |
-| `MULTI` | `+OK\r\n` — **the reply only so far**; commands after it are not yet queued |
-| `EXEC` | `-ERR EXEC without MULTI\r\n` — **always, so far**, since no connection is ever in a transaction |
+| `MULTI` | `+OK\r\n`, or `-ERR MULTI calls can not be nested\r\n` inside one |
+| `EXEC` | array of the queued commands' replies — `*0\r\n` so far, since nothing is queued yet — or `-ERR EXEC without MULTI\r\n` |
 | `RPUSH key el [el ...]` | `:<new length>\r\n` |
 | `LPUSH key el [el ...]` | `:<new length>\r\n` |
 | `LRANGE key start stop` | array of elements, `*0\r\n` when the range is empty or the key is missing |
@@ -33,27 +33,27 @@ its purpose, so every type is a valid reply. Redis names seven — `string`, `li
 branch for each type this server learns to store. `stream` is the third one here;
 `set`, `zset`, `hash` and `vectorset` are still unimplemented.
 
-### MULTI
+### MULTI and EXEC
 
-Only the reply is implemented. `MULTI` answers `+OK` and changes nothing, so the
-commands after it still execute one by one instead of being queued — the fixture
-labels those checks `NOT YET QUEUED` so they are easy to find and flip.
+`MULTI` opens a transaction on **that connection**, `EXEC` closes it and replies
+with one entry per queued command. Nothing is queued yet — commands sent inside a
+transaction still run as they arrive — so `EXEC` is always the empty array `*0`,
+which is also what a genuinely empty transaction will answer once queueing lands.
+The fixtures label the checks that must flip then `NOT YET QUEUED`.
 
-Queueing needs **per-connection** state, and a handler is given the keyspace and
-its arguments only, deliberately, so that it stays testable without a socket.
-Whatever carries the queue has to reach `Connection`, which already holds a
-`pending` deque for the blocking path — a queue of commands not yet run, for a
-different reason.
+- `EXEC` outside a transaction is `-ERR EXEC without MULTI`, and since `EXEC`
+  closes the one it ran, a second `EXEC` gets that error too.
+- A nested `MULTI` is `-ERR MULTI calls can not be nested`, not a reopen:
+  reopening would have to decide the fate of the queue already held.
+- A `MULTI` refused for arity opens nothing.
+- `DISCARD` still does not exist, so it is an unknown command rather than
+  `-ERR DISCARD without MULTI`.
 
-`EXEC` exists but has only its error: with no transaction ever open, every `EXEC`
-is one without a `MULTI`, so `-ERR EXEC without MULTI` is the whole command for
-now. When `MULTI` starts tracking, this grows the branch that runs the queue and
-replies with an array of the queued commands' answers.
-
-Two more things that follow from queueing and are still missing: a nested `MULTI`
-is accepted here rather than answering `-ERR MULTI calls can not be nested`, and
-`DISCARD` does not exist yet, so it is an unknown command rather than
-`-ERR DISCARD without MULTI`.
+The state lives in a `Session` held by each `Connection`, so one client's
+transaction is invisible to every other client — checked with two clients holding
+transactions at once. `MULTI` and `EXEC` are registered in a second dispatch
+table that hands them that session; every other command still takes nothing but a
+`Store`, which is what keeps it runnable without a connection to run it on.
 
 ### INCR
 

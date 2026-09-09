@@ -27,6 +27,8 @@ class Connection:
     # Commands parsed but not yet executed. A blocked client keeps filling this
     # instead of running them, so the order it sent them in is preserved.
     pending: deque = field(default_factory=deque)
+    # Per-connection command state, which is where a transaction lives.
+    session: commands.Session = field(default_factory=commands.Session)
     blocked: "Waiter | None" = None
     closed: bool = False
 
@@ -121,7 +123,9 @@ class Server:
         while connection.pending and not connection.closed:
             if connection.blocked is not None:
                 return  # stay parked; the rest waits until this client is answered
-            reply = commands.execute(self.store, connection.pending.popleft())
+            reply = commands.execute(
+                self.store, connection.pending.popleft(), connection.session
+            )
             if isinstance(reply, commands.Block):
                 self._block(connection, reply)
             elif not self._reply(connection, reply):

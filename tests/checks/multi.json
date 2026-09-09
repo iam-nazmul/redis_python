@@ -1,17 +1,24 @@
 [
-  {"send": ["MULTI"], "expect": "+OK\r\n", "label": "MULTI starts a transaction"},
-  {"send": ["multi"], "expect": "+OK\r\n", "label": "verb is case-insensitive"},
-
-  {"send": ["MULTI"], "expect": "+OK\r\n", "label": "a second MULTI is accepted for now"},
+  {"send": ["MULTI"], "expect": "+OK\r\n", "label": "MULTI opens a transaction"},
+  {"send": ["MULTI"], "expect": "-ERR MULTI calls can not be nested\r\n", "label": "a second one is refused rather than reopening"},
+  {"send": ["multi"], "expect": "-ERR MULTI calls can not be nested\r\n", "label": "case does not get around it"},
+  {"send": ["EXEC"], "expect": "*0\r\n", "label": "EXEC closes it"},
+  {"send": ["multi"], "expect": "+OK\r\n", "label": "and a lowercase MULTI opens a fresh one"},
+  {"send": ["EXEC"], "expect": "*0\r\n", "label": "closed again"},
 
   {"send": ["MULTI", "extra"], "expect": "-ERR wrong number of arguments for 'multi' command\r\n", "label": "MULTI takes no arguments"},
+  {"send": ["EXEC"], "expect": "-ERR EXEC without MULTI\r\n", "label": "and a refused MULTI opened nothing"},
 
+  {"send": ["MULTI"], "expect": "+OK\r\n", "label": "setup: an open transaction"},
   {"send": ["TYPE", "nokey"], "expect": "+none\r\n", "label": "MULTI touched no keys"},
-
-  {"send": ["SET", "foo", "41"], "expect": "+OK\r\n", "label": "NOT YET QUEUED: commands after MULTI still run"},
+  {"send": ["SET", "foo", "41"], "expect": "+OK\r\n", "label": "NOT YET QUEUED: commands inside it still run"},
   {"send": ["INCR", "foo"], "expect": ":42\r\n", "label": "NOT YET QUEUED: and take effect immediately"},
-  {"send": ["GET", "foo"], "expect": "$2\r\n42\r\n", "label": "NOT YET QUEUED: as the value shows"},
+  {"send": ["EXEC"], "expect": "*0\r\n", "label": "NOT YET QUEUED: so EXEC still has nothing to run"},
+  {"send": ["GET", "foo"], "expect": "$2\r\n42\r\n", "label": "and the writes are already in place"},
 
-  {"send": ["MULTI"], "client": "b", "expect": "+OK\r\n", "label": "a second client can MULTI too"},
-  {"send": ["GET", "foo"], "expect": "$2\r\n42\r\n", "label": "which changes nothing for the first"}
+  {"send": ["MULTI"], "client": "b", "expect": "+OK\r\n", "label": "a second client opens its own transaction"},
+  {"send": ["MULTI"], "expect": "+OK\r\n", "label": "which does not stop the first from opening one"},
+  {"send": ["EXEC"], "expect": "*0\r\n", "label": "the first client closes its own"},
+  {"send": ["EXEC"], "expect": "-ERR EXEC without MULTI\r\n", "label": "and has none left"},
+  {"send": ["EXEC"], "client": "b", "expect": "*0\r\n", "label": "while the second client's is still open"}
 ]

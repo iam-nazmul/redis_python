@@ -6,7 +6,10 @@
   {"send": ["EXEC", "extra"], "expect": "-ERR wrong number of arguments for 'exec' command\r\n", "label": "EXEC takes no arguments"},
 
   {"send": ["MULTI"], "expect": "+OK\r\n", "label": "setup: MULTI"},
-  {"send": ["EXEC"], "expect": "-ERR EXEC without MULTI\r\n", "label": "NOT YET TRACKED: MULTI does not open a transaction yet"},
+  {"send": ["EXEC"], "expect": "*0\r\n", "label": "an empty transaction runs and returns an empty array"},
+  {"send": ["EXEC"], "expect": "-ERR EXEC without MULTI\r\n", "label": "which closed it, so a second EXEC has no transaction"},
+  {"send": ["MULTI"], "expect": "+OK\r\n", "label": "a transaction can be opened again"},
+  {"send": ["EXEC"], "expect": "*0\r\n", "label": "and emptily executed again"},
 
   {"send": ["SET", "foo", "1"], "expect": "+OK\r\n", "label": "the connection still works after the error"},
   {"send": ["EXEC"], "expect": "-ERR EXEC without MULTI\r\n", "label": "EXEC again"},
