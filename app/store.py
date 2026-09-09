@@ -1,10 +1,49 @@
 """The keyspace: values, their optional expiries and type checks."""
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-# Redis values are typed; so far this clone stores strings and lists.
-Value = bytes | list[bytes]
+
+@dataclass(frozen=True, order=True)
+class EntryId:
+    """A stream entry's id: a millisecond timestamp and a sequence within it.
+
+    Ordered, because a stream keeps its entries in ascending id order and later
+    stages have to reject an id that does not advance past the last one.
+    """
+
+    milliseconds: int
+    sequence: int
+
+    def encode(self) -> bytes:
+        return b"%d-%d" % (self.milliseconds, self.sequence)
+
+
+@dataclass
+class StreamEntry:
+    id: EntryId
+    # Flat field/value pairs, kept in the order they were given: a stream entry
+    # is an ordered map, and repeated fields are preserved rather than merged.
+    fields: list[bytes]
+
+
+@dataclass
+class Stream:
+    """A sequence of entries in ascending id order.
+
+    A class of its own rather than a plain list, so that the accessors can tell a
+    stream from a list and answer -WRONGTYPE for the commands of the other type.
+    """
+
+    entries: list[StreamEntry] = field(default_factory=list)
+
+    def append(self, entry_id: EntryId, fields: list[bytes]) -> EntryId:
+        self.entries.append(StreamEntry(entry_id, fields))
+        return entry_id
+
+
+# Redis values are typed; so far this clone stores strings, lists and streams.
+Value = bytes | list[bytes] | Stream
 
 
 class WrongTypeError(Exception):
@@ -52,11 +91,13 @@ class Store:
         value = self.get(key)
         if value is None:
             return b"none"
+        if isinstance(value, Stream):
+            return b"stream"
         return b"list" if isinstance(value, list) else b"string"
 
     def get_string(self, key: bytes) -> bytes | None:
         value = self.get(key)
-        if isinstance(value, list):
+        if value is not None and not isinstance(value, bytes):
             raise WrongTypeError(key)
         return value
 
@@ -108,5 +149,19 @@ class Store:
             value = []
             self._entries[key] = Entry(value)
         elif not isinstance(value, list):
+            raise WrongTypeError(key)
+        return value
+
+    def get_or_create_stream(self, key: bytes) -> Stream:
+        """Return the stream at *key*, creating an empty one if the key is absent.
+
+        Like get_or_create_list the stream is returned by reference, so appending
+        an entry leaves any expiry the key already had untouched.
+        """
+        value = self.get(key)
+        if value is None:
+            value = Stream()
+            self._entries[key] = Entry(value)
+        elif not isinstance(value, Stream):
             raise WrongTypeError(key)
         return value

@@ -19,12 +19,14 @@ tests and `redis-cli` both compare them literally.
 | `LPOP key` | bulk string of the first element, `$-1\r\n` when the list is missing or empty |
 | `LPOP key count` | array of up to `count` elements, `*-1\r\n` for a missing key **or a count of 0** |
 | `BLPOP key [key ...] timeout` | `*2\r\n` of [key, element], or `*-1\r\n` on timeout |
-| `TYPE key` | `+string\r\n`, `+list\r\n`, or `+none\r\n` for a missing key |
+| `TYPE key` | `+string\r\n`, `+list\r\n`, `+stream\r\n`, or `+none\r\n` for a missing key |
+| `XADD key id field value [...]` | bulk string of the id the entry was stored under |
 
 `TYPE` is the one command that never answers `-WRONGTYPE`: reporting the type is
 its purpose, so every type is a valid reply. Redis names seven — `string`, `list`,
 `set`, `zset`, `hash`, `stream`, `vectorset` — and `Store.type_of` must gain a
-branch for each type this server learns to store, starting with `stream`.
+branch for each type this server learns to store. `stream` is the third one here;
+`set`, `zset`, `hash` and `vectorset` are still unimplemented.
 
 ### BLPOP
 
@@ -39,6 +41,26 @@ branch for each type this server learns to store, starting with `stream`.
   waiting longest.
 - A parked client's later commands must not run until it is answered; queue them
   and run them in order afterwards.
+
+### XADD
+
+- The reply is the id the entry was stored under, as a **bulk string** — not a
+  simple string. It is the *normalised* id, so `005-007` is stored and answered
+  as `5-7`.
+- Arity is `key id field value ...`: at least five arguments, and an odd number
+  of them. A field without a value is `-ERR wrong number of arguments for 'xadd'
+  command`, the same reply as too few arguments.
+- A malformed id is `-ERR Invalid stream ID specified as stream command
+  argument`. The id is parsed **before** the key is looked at, so an invalid id
+  neither creates the stream nor reports `-WRONGTYPE` on a key of another type.
+- Ids are unbounded here rather than 64-bit: Python ints do not overflow, so an
+  id past `2**64` round-trips instead of wrapping as it would in real Redis.
+- **Only explicit `<ms>-<seq>` ids are accepted for now.** Real Redis also takes
+  `*` and `<ms>-*` and generates the missing parts; until this server does, both
+  are rejected as invalid ids. Ordering is not enforced yet either — real Redis
+  requires each id to be greater than the last and rejects `0-0`.
+- Fields keep their insertion order and repeated fields are not merged, which is
+  what a later `XRANGE` has to replay.
 
 ### LPOP count
 
@@ -100,10 +122,6 @@ Semantics from the Redis docs, for when these stages come up:
 - **`RPOP key [count]`** — the same as `LPOP` from the tail.
 - **`LINDEX key index`** — bulk string, or null bulk string when the index is out
   of range. Negative indexes count from the end.
-- **`XADD key id field value [field value ...]`** — appends an entry to a stream,
-  replying with the entry id as a bulk string. Streams are the next data type;
-  adding one means a new `Value` variant, a `type_of` branch returning `stream`,
-  and a `-WRONGTYPE` path from the existing list and string accessors.
 
 ## Expiry
 

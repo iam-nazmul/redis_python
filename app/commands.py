@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app import resp
-from app.store import Store, WrongTypeError, now_ms
+from app.store import EntryId, Store, WrongTypeError, now_ms
 
 
 @dataclass
@@ -31,6 +31,9 @@ NOT_AN_INTEGER = resp.error(b"ERR value is not an integer or out of range")
 INVALID_EXPIRY = resp.error(b"ERR invalid expire time in 'set' command")
 OUT_OF_RANGE = resp.error(b"ERR value is out of range, must be positive")
 NEGATIVE_TIMEOUT = resp.error(b"ERR timeout is negative")
+INVALID_ENTRY_ID = resp.error(
+    b"ERR Invalid stream ID specified as stream command argument"
+)
 INVALID_TIMEOUT = resp.error(b"ERR timeout is not a float or out of range")
 WRONG_TYPE = resp.error(
     b"WRONGTYPE Operation against a key holding the wrong kind of value"
@@ -244,3 +247,31 @@ def llen(store: Store, args: resp.Command) -> bytes:
         return wrong_args(b"LLEN")
     # A missing key is an empty list, so this is 0 rather than an error.
     return resp.integer(len(store.get_list(args[1])))
+
+
+def _parse_entry_id(raw: bytes) -> EntryId | None:
+    """Parse an explicit "<ms>-<seq>" id, or None when it is not one.
+
+    Deliberately strict: both halves must be present and made of digits, so the
+    forms Redis auto-generates ids for ("*", "<ms>-*") are rejected for now. They
+    become valid once this server learns to generate ids itself.
+    """
+    milliseconds, separator, sequence = raw.partition(b"-")
+    if not (separator and milliseconds.isdigit() and sequence.isdigit()):
+        return None
+    return EntryId(int(milliseconds), int(sequence))
+
+
+@command(b"XADD")
+def xadd(store: Store, args: resp.Command) -> bytes:
+    # key, id and at least one field/value pair, so an odd count of five or more.
+    if len(args) < 5 or len(args) % 2 == 0:
+        return wrong_args(b"XADD")
+    entry_id = _parse_entry_id(args[2])
+    if entry_id is None:
+        return INVALID_ENTRY_ID
+    # The id is validated before the key is touched, so a rejected command leaves
+    # the keyspace as it was — it must not create the stream while erroring.
+    stream = store.get_or_create_stream(args[1])
+    stream.append(entry_id, args[3:])
+    return resp.bulk_string(entry_id.encode())

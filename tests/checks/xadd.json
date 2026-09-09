@@ -1,0 +1,58 @@
+[
+  {"send": ["XADD", "stream_key", "1526919030474-0", "temperature", "36"], "expect": "$15\r\n1526919030474-0\r\n", "label": "happy path: returns the entry id"},
+  {"send": ["TYPE", "stream_key"], "expect": "+stream\r\n", "label": "the key is a stream"},
+
+  {"send": ["XADD", "stream_key", "1526919030474-1", "temperature", "37", "humidity", "94"], "expect": "$15\r\n1526919030474-1\r\n", "label": "several field/value pairs"},
+  {"send": ["XADD", "stream_key", "1526919030475-0", "humidity", "95"], "expect": "$15\r\n1526919030475-0\r\n", "label": "appending to an existing stream"},
+
+  {"send": ["XADD", "fresh", "0-1", "f", "v"], "expect": "$3\r\n0-1\r\n", "label": "the stream is created on first XADD"},
+  {"send": ["XADD", "padded", "005-007", "f", "v"], "expect": "$3\r\n5-7\r\n", "label": "the id is normalised in the reply"},
+  {"send": ["XADD", "big", "99999999999999999999-1", "f", "v"], "expect": "$22\r\n99999999999999999999-1\r\n", "label": "an id beyond 64 bits is not truncated"},
+
+  {"send": ["xadd", "cased", "1-1", "f", "v"], "expect": "$3\r\n1-1\r\n", "label": "verb is case-insensitive"},
+
+  {"send": ["XADD", "binary", "1-1", "f\r\nx", "a b\r\nc"], "expect": "$3\r\n1-1\r\n", "label": "binary-safe field and value"},
+
+  {"send": ["XADD"], "expect": "-ERR wrong number of arguments for 'xadd' command\r\n", "label": "no arguments"},
+  {"send": ["XADD", "k"], "expect": "-ERR wrong number of arguments for 'xadd' command\r\n", "label": "key only"},
+  {"send": ["XADD", "k", "1-1"], "expect": "-ERR wrong number of arguments for 'xadd' command\r\n", "label": "no field/value pair"},
+  {"send": ["XADD", "k", "1-1", "field"], "expect": "-ERR wrong number of arguments for 'xadd' command\r\n", "label": "field without a value"},
+  {"send": ["XADD", "k", "1-1", "f", "v", "dangling"], "expect": "-ERR wrong number of arguments for 'xadd' command\r\n", "label": "trailing field without a value"},
+  {"send": ["TYPE", "k"], "expect": "+none\r\n", "label": "a wrong-arity XADD created nothing"},
+
+  {"send": ["XADD", "bad", "notanid", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "id without a sequence"},
+  {"send": ["XADD", "bad", "1", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "bare milliseconds"},
+  {"send": ["XADD", "bad", "-1-1", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "negative milliseconds"},
+  {"send": ["XADD", "bad", "1--1", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "negative sequence"},
+  {"send": ["XADD", "bad", "1-", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "empty sequence"},
+  {"send": ["XADD", "bad", "1-1-1", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "too many parts"},
+  {"send": ["XADD", "bad", "1-1x", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "trailing junk"},
+  {"send": ["XADD", "bad", "1 -1", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "whitespace is not a digit"},
+  {"send": ["TYPE", "bad"], "expect": "+none\r\n", "label": "no invalid id created the key"},
+
+  {"send": ["SET", "str", "hello"], "expect": "+OK\r\n", "label": "setup: a string"},
+  {"send": ["XADD", "str", "1-1", "f", "v"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "XADD on a string"},
+  {"send": ["GET", "str"], "expect": "$5\r\nhello\r\n", "label": "the string is untouched"},
+
+  {"send": ["RPUSH", "list", "a"], "expect": ":1\r\n", "label": "setup: a list"},
+  {"send": ["XADD", "list", "1-1", "f", "v"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "XADD on a list"},
+  {"send": ["LLEN", "list"], "expect": ":1\r\n", "label": "the list is untouched"},
+
+  {"send": ["GET", "stream_key"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "GET on a stream"},
+  {"send": ["LLEN", "stream_key"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "LLEN on a stream"},
+  {"send": ["LPOP", "stream_key"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "LPOP on a stream"},
+  {"send": ["LRANGE", "stream_key", "0", "-1"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "LRANGE on a stream"},
+  {"send": ["RPUSH", "stream_key", "x"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "RPUSH on a stream"},
+  {"send": ["LPUSH", "stream_key", "x"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "LPUSH on a stream"},
+  {"send": ["BLPOP", "stream_key", "0"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "BLPOP on a stream errors instead of parking"},
+  {"send": ["SET", "stream_key", "clobbered"], "expect": "+OK\r\n", "label": "SET replaces a stream"},
+  {"send": ["TYPE", "stream_key"], "expect": "+string\r\n", "label": "type follows the new value"},
+
+  {"send": ["XADD", "shared", "7-7", "f", "v"], "client": "b", "expect": "$3\r\n7-7\r\n", "label": "a second client can XADD"},
+  {"send": ["TYPE", "shared"], "expect": "+stream\r\n", "label": "and the first client sees the stream"},
+
+  {"send": ["SET", "bin", "a\r\nb\u0000c"], "expect": "+OK\r\n", "label": "transport: binary-safe value in"},
+  {"send": ["GET", "bin"], "expect": "$6\r\na\r\nb\u0000c\r\n", "label": "transport: binary-safe value out"},
+  {"raw": "*x\r\n", "client": "bad", "expect": "-ERR Protocol error\r\n", "label": "transport: malformed RESP is rejected"},
+  {"send": ["XADD", "after_bad", "1-1", "f", "v"], "expect": "$3\r\n1-1\r\n", "label": "transport: other clients survive it"}
+]
