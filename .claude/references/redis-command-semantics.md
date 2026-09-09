@@ -12,6 +12,7 @@ tests and `redis-cli` both compare them literally.
 | `ECHO msg` | bulk string of `msg` |
 | `SET key value [EX s\|PX ms] [NX\|XX]` | `+OK\r\n`, or `$-1\r\n` when NX/XX refuses the write |
 | `GET key` | bulk string, or `$-1\r\n` when missing or expired |
+| `INCR key` | `:<new value>\r\n`; a missing key starts at `:1\r\n` |
 | `RPUSH key el [el ...]` | `:<new length>\r\n` |
 | `LPUSH key el [el ...]` | `:<new length>\r\n` |
 | `LRANGE key start stop` | array of elements, `*0\r\n` when the range is empty or the key is missing |
@@ -29,6 +30,23 @@ its purpose, so every type is a valid reply. Redis names seven — `string`, `li
 `set`, `zset`, `hash`, `stream`, `vectorset` — and `Store.type_of` must gain a
 branch for each type this server learns to store. `stream` is the third one here;
 `set`, `zset`, `hash` and `vectorset` are still unimplemented.
+
+### INCR
+
+- The value is a **string** that is read as an integer and written back as one,
+  so `GET` after `INCR` returns `"7"`, not a number.
+- A missing or expired key counts as 0, so the first `INCR` answers `:1`.
+- Reading the value is stricter than Python's `int()`: Redis takes an optional
+  minus sign and digits with no leading zero, so `" 5"`, `"5 "`, `"+5"`, `"05"`,
+  `"-0"`, `"1.5"` and `""` are all `-ERR value is not an integer or out of
+  range`. `store.as_integer` is that rule, and nothing is written when it fails.
+- Incrementing **keeps the key's TTL**: the entry is updated in place rather than
+  set afresh, so a counter with an expiry still expires on time. Any future
+  command that rewrites a value in place must do the same.
+- A key of another type is `-WRONGTYPE`, and its value is left alone.
+- Real Redis stops at 64 bits and answers `-ERR increment or decrement would
+  overflow`; ids and counters here are unbounded Python ints, so
+  `INCR` past `9223372036854775807` simply continues.
 
 ### BLPOP
 

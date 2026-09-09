@@ -115,6 +115,26 @@ class StreamOrderError(Exception):
     """Raised when an entry id is not strictly greater than the stream's last id."""
 
 
+class NotAnIntegerError(Exception):
+    """Raised when a key holds a string that cannot be read as a counter."""
+
+
+def as_integer(value: bytes) -> int | None:
+    """*value* as an integer, or None when Redis would not read it as one.
+
+    Stricter than int(): Redis accepts an optional minus sign and digits with no
+    leading zero, so " 5", "+5", "05" and "-0" are all refused, where int() would
+    take the first three.
+    """
+    if value == b"0":
+        return 0
+    negative = value.startswith(b"-")
+    digits = value[1:] if negative else value
+    if not digits.isdigit() or digits.startswith(b"0"):
+        return None
+    return -int(digits) if negative else int(digits)
+
+
 def now_ms() -> float:
     """The monotonic clock in milliseconds, unaffected by system clock changes."""
     return time.monotonic() * 1000
@@ -253,3 +273,26 @@ class Store:
         if not isinstance(value, Stream):
             raise WrongTypeError(key)
         return value
+
+    def increment(self, key: bytes, amount: int) -> int:
+        """Add *amount* to the integer at *key* and return the new value.
+
+        A missing or expired key counts as 0, so the first increment leaves 1.
+
+        The entry is updated in place rather than replaced, so the key keeps any
+        expiry it had: incrementing moves a counter, it does not set the key
+        afresh. Going through Store.get first would lose that, since only the
+        entry knows its own deadline.
+        """
+        if self.get(key) is None:  # also drops the entry if it had expired
+            self._entries[key] = Entry(b"%d" % amount)
+            return amount
+        entry = self._entries[key]
+        if not isinstance(entry.value, bytes):
+            raise WrongTypeError(key)
+        number = as_integer(entry.value)
+        if number is None:
+            raise NotAnIntegerError(key)
+        number += amount
+        entry.value = b"%d" % number
+        return number

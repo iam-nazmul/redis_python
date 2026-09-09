@@ -1,0 +1,68 @@
+[
+  {"send": ["SET", "foo", "5"], "expect": "+OK\r\n", "label": "setup: a numeric string"},
+  {"send": ["INCR", "foo"], "expect": ":6\r\n", "label": "the stage example: 5 becomes 6"},
+  {"send": ["INCR", "foo"], "expect": ":7\r\n", "label": "and again"},
+  {"send": ["GET", "foo"], "expect": "$1\r\n7\r\n", "label": "the value is still a string"},
+
+  {"send": ["SET", "zero", "0"], "expect": "+OK\r\n", "label": "setup: zero"},
+  {"send": ["INCR", "zero"], "expect": ":1\r\n", "label": "zero increments to one"},
+
+  {"send": ["SET", "neg", "-5"], "expect": "+OK\r\n", "label": "setup: a negative number"},
+  {"send": ["INCR", "neg"], "expect": ":-4\r\n", "label": "negatives count up towards zero"},
+  {"send": ["SET", "minus_one", "-1"], "expect": "+OK\r\n", "label": "setup: minus one"},
+  {"send": ["INCR", "minus_one"], "expect": ":0\r\n", "label": "and reach it"},
+  {"send": ["GET", "minus_one"], "expect": "$1\r\n0\r\n", "label": "written back as plain 0"},
+
+  {"send": ["SET", "ten", "10"], "expect": "+OK\r\n", "label": "setup: a two-digit number"},
+  {"send": ["INCR", "ten"], "expect": ":11\r\n", "label": "carries into the next digit"},
+
+  {"send": ["INCR", "counter"], "expect": ":1\r\n", "label": "a missing key starts at 1"},
+  {"send": ["TYPE", "counter"], "expect": "+string\r\n", "label": "and is created as a string"},
+  {"send": ["GET", "counter"], "expect": "$1\r\n1\r\n", "label": "holding the new value"},
+
+  {"send": ["SET", "ttl", "5", "PX", "10000"], "expect": "+OK\r\n", "label": "setup: a counter with a TTL"},
+  {"send": ["INCR", "ttl"], "expect": ":6\r\n", "label": "incrementing it"},
+  {"send": ["GET", "ttl"], "expect": "$1\r\n6\r\n", "label": "leaves the new value readable"},
+  {"send": ["SET", "doomed", "5", "PX", "80"], "expect": "+OK\r\n", "label": "setup: a counter about to expire"},
+  {"send": ["INCR", "doomed"], "expect": ":6\r\n", "label": "incrementing does not clear the TTL"},
+  {"sleep": 0.12},
+  {"send": ["GET", "doomed"], "expect": "$-1\r\n", "label": "so the key still expires on time"},
+  {"send": ["INCR", "doomed"], "expect": ":1\r\n", "label": "and an expired counter restarts at 1"},
+
+  {"send": ["SET", "big", "9223372036854775807"], "expect": "+OK\r\n", "label": "setup: the largest 64-bit integer"},
+  {"send": ["INCR", "big"], "expect": ":9223372036854775808\r\n", "label": "no overflow here, unlike real Redis"},
+
+  {"send": ["SET", "word", "abc"], "expect": "+OK\r\n", "label": "setup: a non-numeric string"},
+  {"send": ["INCR", "word"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "which cannot be incremented"},
+  {"send": ["GET", "word"], "expect": "$3\r\nabc\r\n", "label": "and is left untouched"},
+
+  {"send": ["SET", "empty", ""], "expect": "+OK\r\n", "label": "setup: an empty string"},
+  {"send": ["INCR", "empty"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "empty is not zero"},
+  {"send": ["SET", "spaced", " 5"], "expect": "+OK\r\n", "label": "setup: a number with a leading space"},
+  {"send": ["INCR", "spaced"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "whitespace is not trimmed"},
+  {"send": ["SET", "trailing", "5 "], "expect": "+OK\r\n", "label": "setup: a trailing space"},
+  {"send": ["INCR", "trailing"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "nor at the end"},
+  {"send": ["SET", "plus", "+5"], "expect": "+OK\r\n", "label": "setup: an explicit plus sign"},
+  {"send": ["INCR", "plus"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "a plus sign is not accepted"},
+  {"send": ["SET", "padded", "05"], "expect": "+OK\r\n", "label": "setup: a leading zero"},
+  {"send": ["INCR", "padded"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "leading zeros are not a number"},
+  {"send": ["SET", "minus_zero", "-0"], "expect": "+OK\r\n", "label": "setup: negative zero"},
+  {"send": ["INCR", "minus_zero"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "nor is -0"},
+  {"send": ["SET", "float", "1.5"], "expect": "+OK\r\n", "label": "setup: a float"},
+  {"send": ["INCR", "float"], "expect": "-ERR value is not an integer or out of range\r\n", "label": "INCR is integers only"},
+
+  {"send": ["RPUSH", "list", "1"], "expect": ":1\r\n", "label": "setup: a list"},
+  {"send": ["INCR", "list"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "INCR on a list"},
+  {"send": ["LLEN", "list"], "expect": ":1\r\n", "label": "which is left alone"},
+  {"send": ["XADD", "stream", "1-1", "f", "1"], "expect": "$3\r\n1-1\r\n", "label": "setup: a stream"},
+  {"send": ["INCR", "stream"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "INCR on a stream"},
+  {"send": ["TYPE", "stream"], "expect": "+stream\r\n", "label": "also left alone"},
+
+  {"send": ["incr", "foo"], "expect": ":8\r\n", "label": "verb is case-insensitive"},
+  {"send": ["INCR"], "expect": "-ERR wrong number of arguments for 'incr' command\r\n", "label": "no arguments"},
+  {"send": ["INCR", "foo", "2"], "expect": "-ERR wrong number of arguments for 'incr' command\r\n", "label": "INCR takes no amount"},
+  {"send": ["GET", "foo"], "expect": "$1\r\n8\r\n", "label": "and neither error changed the counter"},
+
+  {"send": ["INCR", "foo"], "client": "b", "expect": ":9\r\n", "label": "a second client shares the counter"},
+  {"send": ["GET", "foo"], "expect": "$1\r\n9\r\n", "label": "which the first client sees"}
+]

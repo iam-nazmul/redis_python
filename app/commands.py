@@ -8,6 +8,7 @@ from app.store import (
     MIN_ENTRY_ID,
     EntryId,
     Store,
+    NotAnIntegerError,
     Stream,
     StreamEntry,
     StreamOrderError,
@@ -561,3 +562,13 @@ def xread(store: Store, args: resp.Command) -> Reply:
     if timeout is None:
         return resp.NULL_ARRAY
     return Block(timeout, lambda current: _read_streams(current, keys, starts))
+
+
+@command(b"INCR")
+def incr(store: Store, args: resp.Command) -> bytes:
+    if len(args) != 2:
+        return wrong_args(b"INCR")
+    try:
+        return resp.integer(store.increment(args[1], 1))
+    except NotAnIntegerError:
+        return NOT_AN_INTEGER
