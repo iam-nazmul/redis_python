@@ -1,6 +1,7 @@
 """The keyspace: values, their optional expiries and type checks."""
 
 import time
+from bisect import bisect_left
 from dataclasses import dataclass, field
 
 
@@ -71,6 +72,21 @@ class Stream:
         one id form that cannot fail: it always lands past the last entry.
         """
         return self.next_id(max(milliseconds, self.last_id.milliseconds))
+
+    def range(self, start: EntryId, end: EntryId) -> list[StreamEntry]:
+        """The entries from *start* inclusive up to *end* exclusive.
+
+        An exclusive end because XRANGE's own end is inclusive but may name only a
+        millisecond, and there is no largest sequence to stand in for the rest of
+        it — sequences here are unbounded ints. The caller turns either form into
+        the id just past the last one it wants, which is exact for integers.
+
+        Entries are appended in ascending id order, so the bounds can be found by
+        bisection rather than by scanning the whole stream.
+        """
+        first = bisect_left(self.entries, start, key=lambda entry: entry.id)
+        last = bisect_left(self.entries, end, key=lambda entry: entry.id)
+        return self.entries[first:last]
 
     def append(self, entry_id: EntryId, fields: list[bytes]) -> EntryId:
         """Append an entry, or raise StreamOrderError if the id does not advance."""
@@ -216,5 +232,18 @@ class Store:
             value = Stream()
             self._entries[key] = Entry(value)
         elif not isinstance(value, Stream):
+            raise WrongTypeError(key)
+        return value
+
+    def get_stream(self, key: bytes) -> Stream:
+        """Return the stream at *key*, or an empty one when the key is absent.
+
+        Read-only, like get_list: querying a stream must not create it, so the
+        empty stream returned for a missing key is a throwaway, not stored.
+        """
+        value = self.get(key)
+        if value is None:
+            return Stream()
+        if not isinstance(value, Stream):
             raise WrongTypeError(key)
         return value

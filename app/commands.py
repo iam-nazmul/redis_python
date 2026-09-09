@@ -9,6 +9,7 @@ from app.store import (
     EntryId,
     Store,
     Stream,
+    StreamEntry,
     StreamOrderError,
     WrongTypeError,
     now_ms,
@@ -330,3 +331,56 @@ def xadd(store: Store, args: resp.Command) -> bytes:
     except StreamOrderError:
         return ENTRY_ID_TOO_SMALL
     return resp.bulk_string(entry_id.encode())
+
+
+def _parse_range_start(raw: bytes) -> EntryId | None:
+    """The inclusive lower bound of an XRANGE, or None when it is not an id.
+
+    A bare "<ms>" means the whole millisecond, so its sequence defaults to 0.
+    """
+    milliseconds, _, sequence = raw.partition(b"-")
+    if not milliseconds.isdigit():
+        return None
+    if not sequence:
+        return EntryId(int(milliseconds), 0)
+    if not sequence.isdigit():
+        return None
+    return EntryId(int(milliseconds), int(sequence))
+
+
+def _parse_range_end(raw: bytes) -> EntryId | None:
+    """The **exclusive** upper bound of an XRANGE, or None when it is not an id.
+
+    XRANGE's end is inclusive, and a bare "<ms>" includes every sequence in that
+    millisecond. Rather than invent a largest sequence to stand in for "every" —
+    sequences here have no ceiling — each form is turned into the id just past
+    the last one it asks for: "5-3" ends before 5-4, and "5" before 6-0.
+    """
+    milliseconds, _, sequence = raw.partition(b"-")
+    if not milliseconds.isdigit():
+        return None
+    if not sequence:
+        return EntryId(int(milliseconds) + 1, 0)
+    if not sequence.isdigit():
+        return None
+    return EntryId(int(milliseconds), int(sequence) + 1)
+
+
+def _encode_entry(entry: StreamEntry) -> bytes:
+    """One entry as its id followed by a flat array of its field/value pairs."""
+    return resp.array_of(
+        [resp.bulk_string(entry.id.encode()), resp.array(entry.fields)]
+    )
+
+
+@command(b"XRANGE")
+def xrange(store: Store, args: resp.Command) -> bytes:
+    if len(args) != 4:
+        return wrong_args(b"XRANGE")
+    start, end = _parse_range_start(args[2]), _parse_range_end(args[3])
+    if start is None or end is None:
+        return INVALID_ENTRY_ID
+    # Both bounds are parsed before the key is looked at, as in XADD, so a
+    # malformed id is reported ahead of -WRONGTYPE.
+    entries = store.get_stream(args[1]).range(start, end)
+    return resp.array_of([_encode_entry(entry) for entry in entries])

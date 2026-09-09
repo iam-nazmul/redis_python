@@ -21,6 +21,7 @@ tests and `redis-cli` both compare them literally.
 | `BLPOP key [key ...] timeout` | `*2\r\n` of [key, element], or `*-1\r\n` on timeout |
 | `TYPE key` | `+string\r\n`, `+list\r\n`, `+stream\r\n`, or `+none\r\n` for a missing key |
 | `XADD key id field value [...]` | bulk string of the id the entry was stored under; `id` may be `<ms>-<seq>`, `<ms>-*` or `*` |
+| `XRANGE key start end` | array of `[id, [field, value, ...]]` pairs, `*0\r\n` when nothing matches |
 
 `TYPE` is the one command that never answers `-WRONGTYPE`: reporting the type is
 its purpose, so every type is a valid reply. Redis names seven — `string`, `list`,
@@ -104,6 +105,28 @@ to the last id's millisecond before the sequence rule applies, so a stream holdi
 an explicit id from the future, or a clock that has moved backwards, still yields
 an id that advances: `*` on a stream whose last id is `9999999999999999-0` answers
 `9999999999999999-1` rather than the too-small error.
+
+### XRANGE
+
+- **Both ends are inclusive**, and each may be a bare `<ms>`, which stands for
+  every sequence in that millisecond. A missing sequence therefore means 0 on the
+  start and "the rest of the millisecond" on the end.
+- The reply is an array of two-element arrays: the id as a bulk string, then a
+  **flat** array of field, value, field, value — not pairs of pairs. Fields keep
+  the order they were added in, repeats included.
+- A missing key is an empty array, not an error, and querying must not create it.
+  A range that matches nothing is the same empty array.
+- `start` after `end` is an empty array rather than an error.
+- A malformed bound is `-ERR Invalid stream ID specified as stream command
+  argument`, reported before the key's type, as in `XADD`.
+- **`-` and `+` are not accepted yet**, nor is `COUNT`; real Redis takes `-` and
+  `+` for the smallest and largest id, and `XRANGE key start end COUNT n` to cap
+  the reply. Until then both are an invalid id and a wrong-arity error.
+
+Internally the end bound is turned into the id *just past* the last one wanted —
+`5-3` becomes `5-4`, a bare `5` becomes `6-0` — so `Stream.range` can take a
+half-open interval. That avoids inventing a largest sequence for the bare form, which
+has no obvious value here: unlike real Redis, sequences are unbounded ints.
 
 ### LPOP count
 
