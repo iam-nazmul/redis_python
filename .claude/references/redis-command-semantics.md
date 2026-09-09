@@ -20,7 +20,7 @@ tests and `redis-cli` both compare them literally.
 | `LPOP key count` | array of up to `count` elements, `*-1\r\n` for a missing key **or a count of 0** |
 | `BLPOP key [key ...] timeout` | `*2\r\n` of [key, element], or `*-1\r\n` on timeout |
 | `TYPE key` | `+string\r\n`, `+list\r\n`, `+stream\r\n`, or `+none\r\n` for a missing key |
-| `XADD key id field value [...]` | bulk string of the id the entry was stored under |
+| `XADD key id field value [...]` | bulk string of the id the entry was stored under; `id` may be `<ms>-<seq>` or `<ms>-*` |
 
 `TYPE` is the one command that never answers `-WRONGTYPE`: reporting the type is
 its purpose, so every type is a valid reply. Redis names seven — `string`, `list`,
@@ -57,9 +57,10 @@ branch for each type this server learns to store. `stream` is the third one here
   what a later `XRANGE` has to replay.
 - Ids are unbounded here rather than 64-bit: Python ints do not overflow, so an
   id past `2**64` round-trips instead of wrapping as it would in real Redis.
-- **Only explicit `<ms>-<seq>` ids are accepted for now.** Real Redis also takes
-  `*` and `<ms>-*` and generates the missing parts; until this server does, both
-  are rejected as invalid ids.
+- `<ms>-*` leaves the sequence to the server; **a bare `*`, which leaves out the
+  time part too, is still rejected as an invalid id.** The time part must always
+  be digits, and the star must be the whole sequence: `5-1*` and `5-**` are
+  invalid, not generated.
 
 Ids must advance, and the two ways they can fail have **different** replies:
 
@@ -79,6 +80,20 @@ server. A refused append leaves the stream unchanged and still usable.
 An empty stream starts at `0-0`, tracked as `Stream.last_id` rather than read
 from the last entry: it is a high-water mark, so a stream later emptied by `XDEL`
 must keep refusing the ids it has already handed out.
+
+### XADD generated sequences
+
+`<ms>-*` continues the sequence if the stream is already on that millisecond, and
+starts a millisecond it has not reached at 0. Redis documents a third rule — a
+time part of 0 starts at 1 — but it needs no case of its own: an empty stream's
+last id is `0-0`, so millisecond 0 is one it has already reached, and continuing
+from sequence 0 gives 1. `0-*` on a stream already holding `0-5` therefore yields
+`0-6` rather than restarting at 1, which is what real Redis does too.
+
+A generated sequence never rescues a millisecond behind the last id: `4-*` on a
+stream at `5-5` is the ordinary too-small error, since generation produces an id
+and `append` judges it like any other. Nor can generation produce `0-0`, so the
+minimum-id error stays reachable only through an explicit `0-0`.
 
 ### LPOP count
 

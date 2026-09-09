@@ -8,6 +8,7 @@ from app.store import (
     MIN_ENTRY_ID,
     EntryId,
     Store,
+    Stream,
     StreamOrderError,
     WrongTypeError,
     now_ms,
@@ -262,17 +263,45 @@ def llen(store: Store, args: resp.Command) -> bytes:
     return resp.integer(len(store.get_list(args[1])))
 
 
-def _parse_entry_id(raw: bytes) -> EntryId | None:
-    """Parse an explicit "<ms>-<seq>" id, or None when it is not one.
+@dataclass(frozen=True)
+class RequestedEntryId:
+    """An entry id as the client wrote it, with the parts it left to the server.
 
-    Deliberately strict: both halves must be present and made of digits, so the
-    forms Redis auto-generates ids for ("*", "<ms>-*") are rejected for now. They
-    become valid once this server learns to generate ids itself.
+    Only the sequence can be left out so far; "*", which leaves out the time part
+    as well, is still rejected as invalid.
+    """
+
+    milliseconds: int
+    sequence: int | None  # None when the client wrote "*" in its place
+
+    def explicit_id(self) -> EntryId | None:
+        """The id the client spelled out, or None when it left a part to us."""
+        if self.sequence is None:
+            return None
+        return EntryId(self.milliseconds, self.sequence)
+
+    def resolve(self, stream: Stream) -> EntryId:
+        """The id to store under, generating the sequence if it was left out."""
+        explicit = self.explicit_id()
+        if explicit is not None:
+            return explicit
+        return stream.next_id(self.milliseconds)
+
+
+def _parse_entry_id(raw: bytes) -> RequestedEntryId | None:
+    """Parse "<ms>-<seq>" or "<ms>-*", or None when it is neither.
+
+    Deliberately strict about what is left: the time part must always be digits,
+    so a bare "*" is rejected until this server can generate one.
     """
     milliseconds, separator, sequence = raw.partition(b"-")
-    if not (separator and milliseconds.isdigit() and sequence.isdigit()):
+    if not (separator and milliseconds.isdigit()):
         return None
-    return EntryId(int(milliseconds), int(sequence))
+    if sequence == b"*":
+        return RequestedEntryId(int(milliseconds), None)
+    if not sequence.isdigit():
+        return None
+    return RequestedEntryId(int(milliseconds), int(sequence))
 
 
 @command(b"XADD")
@@ -280,15 +309,17 @@ def xadd(store: Store, args: resp.Command) -> bytes:
     # key, id and at least one field/value pair, so an odd count of five or more.
     if len(args) < 5 or len(args) % 2 == 0:
         return wrong_args(b"XADD")
-    entry_id = _parse_entry_id(args[2])
-    if entry_id is None:
+    requested = _parse_entry_id(args[2])
+    if requested is None:
         return INVALID_ENTRY_ID
     # Both id checks happen before the key is touched, and so ahead of -WRONGTYPE:
     # that is Redis' own order, and it keeps a rejected command from creating the
-    # stream it would then have to fail on, leaving an empty key behind.
-    if entry_id == MIN_ENTRY_ID:
+    # stream it would then have to fail on, leaving an empty key behind. Only an
+    # explicit 0-0 can trip this; a generated sequence never lands there.
+    if requested.explicit_id() == MIN_ENTRY_ID:
         return ENTRY_ID_AT_MINIMUM
     stream = store.get_or_create_stream(args[1])
+    entry_id = requested.resolve(stream)
     try:
         stream.append(entry_id, args[3:])
     except StreamOrderError:

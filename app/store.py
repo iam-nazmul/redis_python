@@ -45,6 +45,23 @@ class Stream:
     # last element: a stream emptied by a future XDEL still refuses ids below it.
     last_id: EntryId = MIN_ENTRY_ID
 
+    def next_id(self, milliseconds: int) -> EntryId:
+        """The id for *milliseconds* when the client left the sequence to us.
+
+        Within the millisecond the stream is already on, the sequence carries on
+        from the last one; a millisecond the stream has not reached yet starts at
+        0. Redis' rule that a time part of 0 starts at 1 instead needs no case of
+        its own: an empty stream's last id is 0-0, so 0 is a millisecond it has
+        already reached and the sequence carries on to 1 by itself.
+
+        A millisecond *behind* the last id still produces an id here; append
+        rejects it, so the too-small reply does not depend on how the id was
+        written.
+        """
+        if milliseconds == self.last_id.milliseconds:
+            return EntryId(milliseconds, self.last_id.sequence + 1)
+        return EntryId(milliseconds, 0)
+
     def append(self, entry_id: EntryId, fields: list[bytes]) -> EntryId:
         """Append an entry, or raise StreamOrderError if the id does not advance."""
         if entry_id <= self.last_id:
