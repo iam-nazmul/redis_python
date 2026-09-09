@@ -41,7 +41,12 @@ branch for each type this server learns to store. `stream` is the third one here
 - Reading the value is stricter than Python's `int()`: Redis takes an optional
   minus sign and digits with no leading zero, so `" 5"`, `"5 "`, `"+5"`, `"05"`,
   `"-0"`, `"1.5"` and `""` are all `-ERR value is not an integer or out of
-  range`. `store.as_integer` is that rule, and nothing is written when it fails.
+  range`. `store.as_integer` is that rule, and nothing is written when it fails —
+  not even the entry's expiry, so a refused counter still expires on time.
+- Two traps in that rule, both checked: the value must be digits **whole**, not
+  by prefix, so `"1\x002"` is refused rather than read as 1; and only **ASCII**
+  digits count, so an Arabic-Indic `٥` is refused, which `str.isdigit()` on a
+  decoded value would wrongly accept.
 - Incrementing **keeps the key's TTL**: the entry is updated in place rather than
   set afresh, so a counter with an expiry still expires on time. Any future
   command that rewrites a value in place must do the same.
