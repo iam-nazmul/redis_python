@@ -572,3 +572,14 @@ def incr(store: Store, args: resp.Command) -> bytes:
         return resp.integer(store.increment(args[1], 1))
     except NotAnIntegerError:
         return NOT_AN_INTEGER
+
+
+@command(b"MULTI")
+def multi(store: Store, args: resp.Command) -> bytes:
+    if len(args) != 1:
+        return wrong_args(b"MULTI")
+    # Only the reply so far. Queueing what follows needs per-connection state,
+    # which a handler cannot reach: it is given the keyspace and its arguments,
+    # deliberately, so that it stays testable without a socket. That is the next
+    # stage's problem, and until then MULTI says OK and changes nothing.
+    return resp.OK

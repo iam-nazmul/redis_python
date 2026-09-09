@@ -1,0 +1,17 @@
+[
+  {"send": ["MULTI"], "expect": "+OK\r\n", "label": "MULTI starts a transaction"},
+  {"send": ["multi"], "expect": "+OK\r\n", "label": "verb is case-insensitive"},
+
+  {"send": ["MULTI"], "expect": "+OK\r\n", "label": "a second MULTI is accepted for now"},
+
+  {"send": ["MULTI", "extra"], "expect": "-ERR wrong number of arguments for 'multi' command\r\n", "label": "MULTI takes no arguments"},
+
+  {"send": ["TYPE", "nokey"], "expect": "+none\r\n", "label": "MULTI touched no keys"},
+
+  {"send": ["SET", "foo", "41"], "expect": "+OK\r\n", "label": "NOT YET QUEUED: commands after MULTI still run"},
+  {"send": ["INCR", "foo"], "expect": ":42\r\n", "label": "NOT YET QUEUED: and take effect immediately"},
+  {"send": ["GET", "foo"], "expect": "$2\r\n42\r\n", "label": "NOT YET QUEUED: as the value shows"},
+
+  {"send": ["MULTI"], "client": "b", "expect": "+OK\r\n", "label": "a second client can MULTI too"},
+  {"send": ["GET", "foo"], "expect": "$2\r\n42\r\n", "label": "which changes nothing for the first"}
+]

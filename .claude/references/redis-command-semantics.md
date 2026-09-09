@@ -13,6 +13,7 @@ tests and `redis-cli` both compare them literally.
 | `SET key value [EX s\|PX ms] [NX\|XX]` | `+OK\r\n`, or `$-1\r\n` when NX/XX refuses the write |
 | `GET key` | bulk string, or `$-1\r\n` when missing or expired |
 | `INCR key` | `:<new value>\r\n`; a missing key starts at `:1\r\n` |
+| `MULTI` | `+OK\r\n` — **the reply only so far**; commands after it are not yet queued |
 | `RPUSH key el [el ...]` | `:<new length>\r\n` |
 | `LPUSH key el [el ...]` | `:<new length>\r\n` |
 | `LRANGE key start stop` | array of elements, `*0\r\n` when the range is empty or the key is missing |
@@ -30,6 +31,23 @@ its purpose, so every type is a valid reply. Redis names seven — `string`, `li
 `set`, `zset`, `hash`, `stream`, `vectorset` — and `Store.type_of` must gain a
 branch for each type this server learns to store. `stream` is the third one here;
 `set`, `zset`, `hash` and `vectorset` are still unimplemented.
+
+### MULTI
+
+Only the reply is implemented. `MULTI` answers `+OK` and changes nothing, so the
+commands after it still execute one by one instead of being queued — the fixture
+labels those checks `NOT YET QUEUED` so they are easy to find and flip.
+
+Queueing needs **per-connection** state, and a handler is given the keyspace and
+its arguments only, deliberately, so that it stays testable without a socket.
+Whatever carries the queue has to reach `Connection`, which already holds a
+`pending` deque for the blocking path — a queue of commands not yet run, for a
+different reason.
+
+Two things that follow from queueing and are therefore still missing: a nested
+`MULTI` is accepted here rather than answering `-ERR MULTI calls can not be
+nested`, and `EXEC` and `DISCARD` do not exist yet, so they are unknown commands
+rather than `-ERR EXEC without MULTI`.
 
 ### INCR
 
