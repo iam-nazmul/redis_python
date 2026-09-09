@@ -171,6 +171,11 @@ has no obvious value here: unlike real Redis, sequences are unbounded ints.
 - `BLOCK ms` waits for entries the read did not find; `0` waits indefinitely. A
   read that already has entries returns them at once and never parks, `BLOCK 0`
   included.
+- An indefinite waiter has **no deadline at all**, rather than a very distant
+  one: `_expire_waiters` skips it and `_next_timeout` leaves it out of the sleep
+  it computes. So another client's timeout expiring nearby neither wakes it nor
+  answers it, which is the case worth checking, since one waiter alone would
+  never show the difference.
 - The timeout is **whole milliseconds**, so `BLOCK 1.5` is
   `-ERR timeout is not an integer or out of range` — where `BLPOP`, whose timeout
   is in seconds, accepts a fraction and says `float` in its error. A negative

@@ -35,5 +35,11 @@
   {"send": ["XREAD", "COUNT", "1", "BLOCK", "100", "STREAMS", "s", "0"], "expect": "-ERR syntax error\r\n", "label": "COUNT is still not supported"},
   {"send": ["SET", "str", "hello"], "expect": "+OK\r\n", "label": "setup: a string"},
   {"send": ["XREAD", "BLOCK", "100", "STREAMS", "str", "0"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "a wrong type is reported rather than blocked on"},
+  {"send": ["XREAD", "BLOCK", "0", "STREAMS", "z", "0"], "client": "h", "read": false, "label": "a client blocks indefinitely"},
+  {"send": ["XREAD", "BLOCK", "100", "STREAMS", "z", "0"], "client": "i", "read": false, "label": "another blocks on the same stream with a timeout"},
+  {"recv": "i", "timeout": 1.0, "expect": "*-1\r\n", "label": "the timed one times out"},
+  {"recv": "h", "timeout": 1.5, "expect": "", "label": "the indefinite one is untouched by that deadline, 1.5s on"},
+  {"send": ["XADD", "z", "1-1", "z", "1"], "expect": "$3\r\n1-1\r\n", "label": "a write finally arrives"},
+  {"recv": "h", "expect": "*1\r\n*2\r\n$1\r\nz\r\n*1\r\n*2\r\n$3\r\n1-1\r\n*2\r\n$1\r\nz\r\n$1\r\n1\r\n", "label": "and wakes it, however long it waited"},
   {"send": ["XREAD", "STREAMS", "s", "0"], "expect": "*1\r\n*2\r\n$1\r\ns\r\n*4\r\n*2\r\n$3\r\n1-1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n*2\r\n$3\r\n2-2\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n*2\r\n$3\r\n3-3\r\n*2\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$3\r\n4-4\r\n*2\r\n$1\r\nd\r\n$1\r\n4\r\n", "label": "the stream reads back in full at the end"}
 ]

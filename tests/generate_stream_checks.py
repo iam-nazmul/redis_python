@@ -396,6 +396,19 @@ BLOCK_CHECKS = [
     {"send": ["XREAD", "BLOCK", "100", "STREAMS", "str", "0"], "expect": WRONGTYPE,
      "label": "a wrong type is reported rather than blocked on"},
 
+    # BLOCK 0 waits indefinitely: no deadline of its own, and unmoved by anyone
+    # else's. The timed waiter below expires while this one keeps waiting.
+    {"send": ["XREAD", "BLOCK", "0", "STREAMS", "z", "0"], "client": "h", "read": False,
+     "label": "a client blocks indefinitely"},
+    {"send": ["XREAD", "BLOCK", "100", "STREAMS", "z", "0"], "client": "i", "read": False,
+     "label": "another blocks on the same stream with a timeout"},
+    {"recv": "i", "timeout": 1.0, "expect": NULL_ARRAY, "label": "the timed one times out"},
+    {"recv": "h", "timeout": 1.5, "expect": "",
+     "label": "the indefinite one is untouched by that deadline, 1.5s on"},
+    add("z", "1-1", "z", "1", label="a write finally arrives"),
+    {"recv": "h", "expect": stream_reply("z", entry("1-1", "z", "1")),
+     "label": "and wakes it, however long it waited"},
+
     read_many(["s"], ["0"], stream_reply("s", b11, b22, b33, b44),
               "the stream reads back in full at the end"),
 ]
