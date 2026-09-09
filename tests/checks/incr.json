@@ -19,6 +19,14 @@
   {"send": ["INCR", "counter"], "expect": ":1\r\n", "label": "a missing key starts at 1"},
   {"send": ["TYPE", "counter"], "expect": "+string\r\n", "label": "and is created as a string"},
   {"send": ["GET", "counter"], "expect": "$1\r\n1\r\n", "label": "holding the new value"},
+  {"send": ["INCR", "counter"], "expect": ":2\r\n", "label": "the key it created counts on from there"},
+  {"send": ["INCR", "counter"], "expect": ":3\r\n", "label": "and again"},
+  {"send": ["INCR", "counter"], "client": "b", "expect": ":4\r\n", "label": "a second client continues it"},
+
+  {"send": ["RPUSH", "drained", "a"], "expect": ":1\r\n", "label": "setup: a one-element list"},
+  {"send": ["LPOP", "drained"], "expect": "$1\r\na\r\n", "label": "emptied, so its key stops existing"},
+  {"send": ["INCR", "drained"], "expect": ":1\r\n", "label": "which INCR then takes as a missing key"},
+  {"send": ["TYPE", "drained"], "expect": "+string\r\n", "label": "creating a string where a list had been"},
 
   {"send": ["SET", "ttl", "5", "PX", "10000"], "expect": "+OK\r\n", "label": "setup: a counter with a TTL"},
   {"send": ["INCR", "ttl"], "expect": ":6\r\n", "label": "incrementing it"},
@@ -28,6 +36,8 @@
   {"sleep": 0.12},
   {"send": ["GET", "doomed"], "expect": "$-1\r\n", "label": "so the key still expires on time"},
   {"send": ["INCR", "doomed"], "expect": ":1\r\n", "label": "and an expired counter restarts at 1"},
+  {"sleep": 0.15},
+  {"send": ["GET", "doomed"], "expect": "$1\r\n1\r\n", "label": "the key INCR recreated has no expiry of its own"},
 
   {"send": ["SET", "big", "9223372036854775807"], "expect": "+OK\r\n", "label": "setup: the largest 64-bit integer"},
   {"send": ["INCR", "big"], "expect": ":9223372036854775808\r\n", "label": "no overflow here, unlike real Redis"},

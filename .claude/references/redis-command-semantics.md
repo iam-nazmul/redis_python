@@ -35,7 +35,9 @@ branch for each type this server learns to store. `stream` is the third one here
 
 - The value is a **string** that is read as an integer and written back as one,
   so `GET` after `INCR` returns `"7"`, not a number.
-- A missing or expired key counts as 0, so the first `INCR` answers `:1`.
+- A missing or expired key counts as 0, so the first `INCR` answers `:1`. The key
+  it creates is a plain string with **no expiry**, even when the key it replaced
+  had one: an expired entry is dropped, not revived with its old deadline.
 - Reading the value is stricter than Python's `int()`: Redis takes an optional
   minus sign and digits with no leading zero, so `" 5"`, `"5 "`, `"+5"`, `"05"`,
   `"-0"`, `"1.5"` and `""` are all `-ERR value is not an integer or out of
