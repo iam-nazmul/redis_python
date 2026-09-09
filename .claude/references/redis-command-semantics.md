@@ -19,6 +19,16 @@ tests and `redis-cli` both compare them literally.
 | `LPOP key` | bulk string of the first element, `$-1\r\n` when the list is missing or empty |
 | `LPOP key count` | array of up to `count` elements, `*-1\r\n` for a missing key **or a count of 0** |
 | `BLPOP key [key ...] timeout` | `*2\r\n` of [key, element], or `*-1\r\n` on timeout |
+| `TYPE key` | `+string\r\n`, `+list\r\n`, `+stream\r\n`, or `+none\r\n` for a missing key |
+| `XADD key id field value [...]` | bulk string of the id the entry was stored under; `id` may be `<ms>-<seq>`, `<ms>-*` or `*` |
+| `XRANGE key start end` | array of `[id, [field, value, ...]]` pairs, `*0\r\n` when nothing matches; a bound may be `<ms>`, `<ms>-<seq>`, `-`, or `+` as the end |
+| `XREAD [BLOCK ms] STREAMS key [key ...] id [id ...]` | array of `[key, [entries]]`, one per stream with something newer, or `*-1\r\n` when none has |
+
+`TYPE` is the one command that never answers `-WRONGTYPE`: reporting the type is
+its purpose, so every type is a valid reply. Redis names seven — `string`, `list`,
+`set`, `zset`, `hash`, `stream`, `vectorset` — and `Store.type_of` must gain a
+branch for each type this server learns to store. `stream` is the third one here;
+`set`, `zset`, `hash` and `vectorset` are still unimplemented.
 
 ### BLPOP
 
@@ -33,6 +43,171 @@ tests and `redis-cli` both compare them literally.
   waiting longest.
 - A parked client's later commands must not run until it is answered; queue them
   and run them in order afterwards.
+
+### XADD
+
+- The reply is the id the entry was stored under, as a **bulk string** — not a
+  simple string. It is the *normalised* id, so `005-007` is stored and answered
+  as `5-7`.
+- Arity is `key id field value ...`: at least five arguments, and an odd number
+  of them. A field without a value is `-ERR wrong number of arguments for 'xadd'
+  command`, the same reply as too few arguments.
+- A malformed id is `-ERR Invalid stream ID specified as stream command
+  argument`. The id is parsed **before** the key is looked at, so an invalid id
+  neither creates the stream nor reports `-WRONGTYPE` on a key of another type.
+- Fields keep their insertion order and repeated fields are not merged, which is
+  what a later `XRANGE` has to replay.
+- Ids are unbounded here rather than 64-bit: Python ints do not overflow, so an
+  id past `2**64` round-trips instead of wrapping as it would in real Redis.
+- `<ms>-*` leaves the sequence to the server and a bare `*` leaves the time part
+  to it as well. A star stands in for a whole part or not at all: `*-*`, `5-1*`
+  and `5-**` are invalid ids, not requests to generate something.
+
+Ids must advance, and the two ways they can fail have **different** replies:
+
+- Not greater than the last id — equal, an earlier millisecond, or the same
+  millisecond with an earlier sequence — is `-ERR The ID specified in XADD is
+  equal or smaller than the target stream top item`. A later millisecond may
+  restart the sequence at 0; only the pair as a whole has to increase.
+- `0-0` is `-ERR The ID specified in XADD must be greater than 0-0`, on an empty
+  stream and a populated one alike. `0-1` is the smallest id any stream accepts.
+
+Both id checks run **before the key is looked at**, so on a key of another type a
+malformed id, or `0-0`, is reported instead of `-WRONGTYPE`. That is the order in
+the Redis source — the `0-0` check returns early precisely so a doomed append
+cannot leave an empty stream behind — and it has not been diffed against a live
+server. A refused append leaves the stream unchanged and still usable.
+
+An empty stream starts at `0-0`, tracked as `Stream.last_id` rather than read
+from the last entry: it is a high-water mark, so a stream later emptied by `XDEL`
+must keep refusing the ids it has already handed out.
+
+### XADD generated ids
+
+`<ms>-*` continues the sequence if the stream is already on that millisecond, and
+starts a millisecond it has not reached at 0. Redis documents a third rule — a
+time part of 0 starts at 1 — but it needs no case of its own: an empty stream's
+last id is `0-0`, so millisecond 0 is one it has already reached, and continuing
+from sequence 0 gives 1. `0-*` on a stream already holding `0-5` therefore yields
+`0-6` rather than restarting at 1, which is what real Redis does too.
+
+A generated sequence never rescues a millisecond behind the last id: `4-*` on a
+stream at `5-5` is the ordinary too-small error, since generation produces an id
+and `append` judges it like any other. Nor can generation produce `0-0`, so the
+minimum-id error stays reachable only through an explicit `0-0`.
+
+A bare `*` takes the time part from the **wall clock** — `unix_ms`, not the
+monotonic `now_ms` expiry uses, because a stream id is a timestamp clients read
+and compare against their own clock. The sequence then follows the same rule, so
+appends inside one millisecond come out `…-0`, `…-1`, `…-2`.
+
+`*` is the one id form that **cannot fail**. The clock reading is clamped forward
+to the last id's millisecond before the sequence rule applies, so a stream holding
+an explicit id from the future, or a clock that has moved backwards, still yields
+an id that advances: `*` on a stream whose last id is `9999999999999999-0` answers
+`9999999999999999-1` rather than the too-small error.
+
+### XRANGE
+
+- **Both ends are inclusive**, and each may be a bare `<ms>`, which stands for
+  every sequence in that millisecond. A missing sequence therefore means 0 on the
+  start and "the rest of the millisecond" on the end.
+- The reply is an array of two-element arrays: the id as a bulk string, then a
+  **flat** array of field, value, field, value — not pairs of pairs. Fields keep
+  the order they were added in, repeats included.
+- A missing key is an empty array, not an error, and querying must not create it.
+  A range that matches nothing is the same empty array.
+- `start` after `end` is an empty array rather than an error.
+- A malformed bound is `-ERR Invalid stream ID specified as stream command
+  argument`, reported before the key's type, as in `XADD`.
+- `-` stands for the smallest id a stream can hold, `0-0`. Redis accepts it as
+  **either** bound, not only as the start, so it is resolved during parsing
+  rather than by position: `XRANGE k 0 -` is a valid, always-empty query.
+- `+` runs to the last entry. It is **the end bound only**, and that asymmetry
+  with `-` is real rather than an oversight: `-` is the id `0-0`, while `+` names
+  no id here at all, since ids are unbounded. As an end it drops the upper bound;
+  as a start it would have to bound the range *above* every entry, which needs a
+  largest id this server does not have. Real Redis, whose ids stop at
+  `UINT64_MAX`, accepts `+` as a start and answers the empty array it degenerates
+  to; this server reports an invalid id.
+- **`COUNT` is not supported**; `XRANGE key start end COUNT n` caps the reply in
+  real Redis and is a wrong-arity error here.
+
+Internally the end bound is turned into the id *just past* the last one wanted —
+`5-3` becomes `5-4`, a bare `5` becomes `6-0` — so `Stream.range` can take a
+half-open interval. That avoids inventing a largest sequence for the bare form, which
+has no obvious value here: unlike real Redis, sequences are unbounded ints.
+
+### XREAD
+
+- **Exclusive**, where `XRANGE` is inclusive: `XREAD STREAMS k 5-0` returns the
+  entries *after* `5-0`. A bare `<ms>` means sequence 0, so `k 6` excludes `6-0`
+  itself — the same id, read differently by the two commands.
+- The reply nests one level deeper than `XRANGE`: an array of streams, each
+  `[key, [entry, ...]]`, **in the order the keys were asked for**. A stream with
+  nothing new is left out rather than reported empty, so the reply may be shorter
+  than the request; when no stream has anything, it is the **null array**
+  `*-1\r\n` rather than an empty one. A blocking `XREAD` will use the same reply
+  for a timeout.
+- All the keys come first and all the ids follow, lining up by position:
+  `STREAMS a b 0 5` reads `a` from `0` and `b` from `5`. A key may be repeated,
+  and is then read once per id given for it. A missing key is simply absent from
+  the reply.
+- One bad argument fails the whole command: a malformed id anywhere is the
+  invalid-id error and nothing is read, and a key of the wrong type anywhere is
+  `-WRONGTYPE`, even when other streams had entries to report.
+- Ids are strict: no `-`, `+` or `*`. Those are `-ERR Invalid stream ID specified
+  as stream command argument`.
+- Not `STREAMS` where it is expected is `-ERR syntax error`; an odd number of
+  keys and ids after it is `-ERR Unbalanced XREAD list of streams: for each
+  stream key an ID or '$' must be specified.` (that string is from the Redis
+  source's wording and has not been diffed against a live server). Fewer than
+  three arguments is the wrong-arity error, which is what `XREAD STREAMS k` gets.
+- `$` means the stream's **last id as the command runs**, so the read returns
+  only what arrives after it was sent. It is resolved per key, against the stream
+  named beside it, and a key that does not exist yet resolves to `0-0`, so its
+  first entry counts as new. Only a bare `$` — `$$`, `$-1` and `1-$` are invalid
+  ids. Without `BLOCK` it is nearly always the null array, since nothing can
+  follow the last id yet.
+- **`COUNT` is not supported**, a `-ERR syntax error` for now.
+
+### XREAD BLOCK
+
+- `BLOCK ms` waits for entries the read did not find; `0` waits indefinitely. A
+  read that already has entries returns them at once and never parks, `BLOCK 0`
+  included.
+- An indefinite waiter has **no deadline at all**, rather than a very distant
+  one: `_expire_waiters` skips it and `_next_timeout` leaves it out of the sleep
+  it computes. So another client's timeout expiring nearby neither wakes it nor
+  answers it, which is the case worth checking, since one waiter alone would
+  never show the difference.
+- The timeout is **whole milliseconds**, so `BLOCK 1.5` is
+  `-ERR timeout is not an integer or out of range` — where `BLPOP`, whose timeout
+  is in seconds, accepts a fraction and says `float` in its error. A negative
+  timeout is `-ERR timeout is negative` for both.
+- A timeout answers `*-1\r\n`, the same null array a non-blocking read with
+  nothing to report gives.
+- Options come **before** `STREAMS`; everything after it is a key or an id, so
+  `XREAD STREAMS k 0 BLOCK 100` reads `BLOCK` and `100` as ids and fails on them.
+- Anything that would make the read fail — a malformed id, a key of the wrong
+  type — fails it immediately rather than parking.
+- Ids, `$` included, are resolved **before** the client parks, and the retry
+  closes over the resolved ids. A read parked on `$` therefore waits for entries
+  after the id the stream held when the command arrived, not after whatever it
+  holds when the retry runs — which is the difference between waking with the
+  first new entry and skipping it.
+- A read that can answer at once does, even when another of its streams was given
+  `$`: `STREAMS a b $ 0` returns `b`'s history immediately rather than parking.
+- One write wakes **every** client waiting on that stream, unlike `BLPOP`, where
+  one push wakes exactly one waiter: a read takes nothing away from the stream,
+  so there is nothing to hand to one client at another's expense.
+
+`Block` carries the retry the server should call again, not a list of keys, which
+is what lets `BLPOP` and `XREAD` share one waiting mechanism while waiting for
+different things. Two properties no checks file can express, verified by hand
+whenever this path changes: a client that disconnects while parked is dropped and
+its stream keeps the write, and an idle server holding waiters burns no CPU
+(`/proc/<pid>/stat` utime+stime unmoved), proving the loop sleeps in `select`.
 
 ### LPOP count
 
@@ -94,7 +269,6 @@ Semantics from the Redis docs, for when these stages come up:
 - **`RPOP key [count]`** — the same as `LPOP` from the tail.
 - **`LINDEX key index`** — bulk string, or null bulk string when the index is out
   of range. Negative indexes count from the end.
-- **`TYPE key`** — `+string\r\n`, `+list\r\n`, or `+none\r\n` for a missing key.
 
 ## Expiry
 

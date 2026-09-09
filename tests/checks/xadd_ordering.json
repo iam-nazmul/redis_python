@@ -1,0 +1,36 @@
+[
+  {"send": ["XADD", "some_key", "1-1", "foo", "bar"], "expect": "$3\r\n1-1\r\n", "label": "first entry"},
+  {"send": ["XADD", "some_key", "1-1", "bar", "baz"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "an equal id is refused"},
+  {"send": ["XADD", "some_key", "1-0", "bar", "baz"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "a smaller sequence in the same millisecond"},
+  {"send": ["XADD", "some_key", "0-9", "bar", "baz"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "a smaller millisecond, larger sequence"},
+  {"send": ["XADD", "some_key", "1-2", "bar", "baz"], "expect": "$3\r\n1-2\r\n", "label": "the next sequence in the same millisecond"},
+  {"send": ["XADD", "some_key", "2-0", "bar", "baz"], "expect": "$3\r\n2-0\r\n", "label": "a later millisecond may restart the sequence at 0"},
+  {"send": ["XADD", "some_key", "2-0", "bar", "baz"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "and 2-0 is now taken"},
+
+  {"send": ["XADD", "gaps", "5-5", "f", "v"], "expect": "$3\r\n5-5\r\n", "label": "setup: a stream starting mid-range"},
+  {"send": ["XADD", "gaps", "4-99999", "f", "v"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "a huge sequence cannot rescue an earlier millisecond"},
+  {"send": ["XADD", "gaps", "5-6", "f", "v"], "expect": "$3\r\n5-6\r\n", "label": "one past the last sequence"},
+  {"send": ["XADD", "gaps", "99999999999999999999-0", "f", "v"], "expect": "$22\r\n99999999999999999999-0\r\n", "label": "ids past 64 bits still compare correctly"},
+  {"send": ["XADD", "gaps", "99999999999999999998-0", "f", "v"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "and are compared as numbers, not strings"},
+
+  {"send": ["XADD", "minimum", "0-0", "f", "v"], "expect": "-ERR The ID specified in XADD must be greater than 0-0\r\n", "label": "0-0 has its own error, not the too-small one"},
+  {"send": ["XADD", "minimum", "000-000", "f", "v"], "expect": "-ERR The ID specified in XADD must be greater than 0-0\r\n", "label": "0-0 is recognised after normalising"},
+  {"send": ["TYPE", "minimum"], "expect": "+none\r\n", "label": "a refused 0-0 left no empty stream behind"},
+  {"send": ["XADD", "minimum", "0-1", "f", "v"], "expect": "$3\r\n0-1\r\n", "label": "0-1 is the smallest id a stream accepts"},
+  {"send": ["XADD", "minimum", "0-0", "f", "v"], "expect": "-ERR The ID specified in XADD must be greater than 0-0\r\n", "label": "0-0 keeps its own error on a non-empty stream"},
+
+  {"send": ["SET", "str", "hello"], "expect": "+OK\r\n", "label": "setup: a string"},
+  {"send": ["XADD", "str", "0-0", "f", "v"], "expect": "-ERR The ID specified in XADD must be greater than 0-0\r\n", "label": "0-0 is refused before the key's type is checked"},
+  {"send": ["XADD", "str", "notanid", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "so is a malformed id"},
+  {"send": ["XADD", "str", "1-1", "f", "v"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "a valid id reaches the type check"},
+
+  {"send": ["XADD", "rejected", "5-5", "f", "v"], "expect": "$3\r\n5-5\r\n", "label": "setup: a stream to push against"},
+  {"send": ["XADD", "rejected", "5-5", "f2", "v2"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "a refused append"},
+  {"send": ["XADD", "rejected", "5-6", "f3", "v3"], "expect": "$3\r\n5-6\r\n", "label": "the stream still works afterwards"},
+  {"send": ["TYPE", "rejected"], "expect": "+stream\r\n", "label": "and is still a stream"},
+
+  {"send": ["XADD", "shared", "1-1", "f", "v"], "expect": "$3\r\n1-1\r\n", "label": "setup: first client writes"},
+  {"send": ["XADD", "shared", "1-1", "f", "v"], "client": "b", "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "a second client sees the same last id"},
+  {"send": ["XADD", "shared", "1-2", "f", "v"], "client": "b", "expect": "$3\r\n1-2\r\n", "label": "and can advance it"},
+  {"send": ["XADD", "shared", "1-2", "f", "v"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "which the first client then sees"}
+]

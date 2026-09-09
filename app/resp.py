@@ -26,13 +26,18 @@ def bulk_string(value: bytes) -> bytes:
     return b"$%d%s%s%s" % (len(value), CRLF, value, CRLF)
 
 
-def array(values: list[bytes]) -> bytes:
-    """Encode *values* as an array of bulk strings.
+def array_of(elements: list[bytes]) -> bytes:
+    """Encode an array whose *elements* are already encoded replies.
 
-    Every element is bulk-encoded, which is what the list commands need. An array
-    holding other reply types has to be assembled by hand.
+    The form to use when an array holds anything other than bulk strings — an
+    array of arrays, say, which is how a stream entry and its fields come back.
     """
-    return b"*%d%s%s" % (len(values), CRLF, b"".join(bulk_string(v) for v in values))
+    return b"*%d%s%s" % (len(elements), CRLF, b"".join(elements))
+
+
+def array(values: list[bytes]) -> bytes:
+    """Encode *values* as an array of bulk strings, which the list commands want."""
+    return array_of([bulk_string(value) for value in values])
 
 
 OK = simple_string(b"OK")

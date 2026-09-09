@@ -4,6 +4,7 @@ import logging
 import selectors
 import socket
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app import commands, resp
@@ -32,10 +33,10 @@ class Connection:
 
 @dataclass
 class Waiter:
-    """A client parked on one or more keys until an element arrives or time runs out."""
+    """A parked client, and the retry that decides when it can be answered."""
 
     connection: Connection
-    keys: list[bytes]
+    retry: Callable[[Store], bytes | None]
     deadline: float | None  # monotonic ms, or None to wait indefinitely
 
 
@@ -139,7 +140,7 @@ class Server:
 
     def _block(self, connection: Connection, block: commands.Block) -> None:
         deadline = None if block.timeout == 0 else now_ms() + block.timeout * 1000
-        waiter = Waiter(connection, block.keys, deadline)
+        waiter = Waiter(connection, block.retry, deadline)
         connection.blocked = waiter
         self.waiters.append(waiter)
 
@@ -155,19 +156,19 @@ class Server:
             self._drain(waiter.connection)
 
     def _serve_waiters(self) -> None:
-        """Hand elements to parked clients, longest-waiting first."""
+        """Answer parked clients that can now be answered, longest-waiting first."""
         for waiter in list(self.waiters):
             if waiter.connection.closed:
                 self._forget(waiter)
                 continue
             try:
-                popped = commands.pop_first_available(self.store, waiter.keys)
+                reply = waiter.retry(self.store)
             except WrongTypeError:
-                # A key now holds something that is not a list; keep waiting for
-                # one that does rather than failing a command already accepted.
+                # The key now holds something of another type; keep waiting for
+                # one that fits rather than failing a command already accepted.
                 continue
-            if popped is not None:
-                self._unblock(waiter, popped)
+            if reply is not None:
+                self._unblock(waiter, reply)
 
     def _expire_waiters(self) -> None:
         now = now_ms()

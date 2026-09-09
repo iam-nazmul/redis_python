@@ -1,0 +1,25 @@
+[
+  {"send": ["XADD", "s", "*", "f", "v"], "label": "a bare * is generated, not rejected (id is the clock)"},
+  {"send": ["TYPE", "s"], "expect": "+stream\r\n", "label": "and the stream exists"},
+  {"send": ["XADD", "s", "1-1", "f", "v"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "the generated id is a real timestamp, far past 1-1"},
+  {"send": ["XADD", "s", "0-1", "f", "v"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "and past the smallest id there is"},
+
+  {"send": ["XADD", "future", "9999999999999999-0", "f", "v"], "expect": "$18\r\n9999999999999999-0\r\n", "label": "setup: an explicit id from the year 318857"},
+  {"send": ["XADD", "future", "*", "f", "v"], "expect": "$18\r\n9999999999999999-1\r\n", "label": "* behind the last id advances the sequence instead of failing"},
+  {"send": ["XADD", "future", "*", "f", "v"], "expect": "$18\r\n9999999999999999-2\r\n", "label": "and keeps advancing it"},
+
+  {"send": ["XADD", "future", "9999999999999999-2", "f", "v"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "an explicit id may not reuse what * handed out"},
+  {"send": ["XADD", "future", "9999999999999999-3", "f", "v"], "expect": "$18\r\n9999999999999999-3\r\n", "label": "but may continue past it"},
+  {"send": ["XADD", "future", "*", "f", "v"], "expect": "$18\r\n9999999999999999-4\r\n", "label": "and * continues from the explicit one"},
+
+  {"send": ["SET", "str", "hello"], "expect": "+OK\r\n", "label": "setup: a string"},
+  {"send": ["XADD", "str", "*", "f", "v"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "* still reaches the type check"},
+  {"send": ["GET", "str"], "expect": "$5\r\nhello\r\n", "label": "the string is untouched"},
+
+  {"send": ["XADD", "arity", "*"], "expect": "-ERR wrong number of arguments for 'xadd' command\r\n", "label": "* does not excuse a missing field/value pair"},
+  {"send": ["XADD", "arity", "*", "f"], "expect": "-ERR wrong number of arguments for 'xadd' command\r\n", "label": "nor a field without a value"},
+  {"send": ["TYPE", "arity"], "expect": "+none\r\n", "label": "and created nothing"},
+
+  {"send": ["XADD", "shared", "*", "f", "v"], "client": "b", "label": "a second client generates"},
+  {"send": ["TYPE", "shared"], "expect": "+stream\r\n", "label": "and the first client sees the stream"}
+]

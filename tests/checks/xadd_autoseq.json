@@ -1,0 +1,40 @@
+[
+  {"send": ["XADD", "s", "5-*", "f", "v"], "expect": "$3\r\n5-0\r\n", "label": "a millisecond the stream has not reached starts at 0"},
+  {"send": ["XADD", "s", "5-*", "f", "v"], "expect": "$3\r\n5-1\r\n", "label": "the same millisecond again carries on"},
+  {"send": ["XADD", "s", "5-*", "f", "v"], "expect": "$3\r\n5-2\r\n", "label": "and again"},
+  {"send": ["XADD", "s", "5-9", "f", "v"], "expect": "$3\r\n5-9\r\n", "label": "an explicit id may jump the sequence forward"},
+  {"send": ["XADD", "s", "5-*", "f", "v"], "expect": "$4\r\n5-10\r\n", "label": "generation carries on from the explicit one"},
+  {"send": ["XADD", "s", "6-*", "f", "v"], "expect": "$3\r\n6-0\r\n", "label": "a later millisecond restarts at 0"},
+  {"send": ["XADD", "s", "6-*", "f", "v"], "expect": "$3\r\n6-1\r\n", "label": "then carries on there"},
+
+  {"send": ["XADD", "zero", "0-*", "f", "v"], "expect": "$3\r\n0-1\r\n", "label": "time part 0 on an empty stream starts at 1, not 0"},
+  {"send": ["XADD", "zero", "0-*", "f", "v"], "expect": "$3\r\n0-2\r\n", "label": "and carries on from there"},
+  {"send": ["XADD", "zero", "1-*", "f", "v"], "expect": "$3\r\n1-0\r\n", "label": "leaving time part 0 restarts at 0"},
+
+  {"send": ["XADD", "explicit_zero", "0-5", "f", "v"], "expect": "$3\r\n0-5\r\n", "label": "setup: explicit id in millisecond 0"},
+  {"send": ["XADD", "explicit_zero", "0-*", "f", "v"], "expect": "$3\r\n0-6\r\n", "label": "millisecond 0 carries on rather than resetting to 1"},
+
+  {"send": ["XADD", "back", "5-5", "f", "v"], "expect": "$3\r\n5-5\r\n", "label": "setup: a stream at 5-5"},
+  {"send": ["XADD", "back", "4-*", "f", "v"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "an earlier millisecond is refused even with a generated sequence"},
+  {"send": ["XADD", "back", "0-*", "f", "v"], "expect": "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n", "label": "including millisecond 0"},
+  {"send": ["XADD", "back", "5-*", "f", "v"], "expect": "$3\r\n5-6\r\n", "label": "the stream still works after a refusal"},
+
+  {"send": ["XADD", "big", "99999999999999999999-*", "f", "v"], "expect": "$22\r\n99999999999999999999-0\r\n", "label": "generation past 64 bits"},
+  {"send": ["XADD", "big", "99999999999999999999-*", "f", "v"], "expect": "$22\r\n99999999999999999999-1\r\n", "label": "and it carries on"},
+
+  {"send": ["XADD", "bad", "*-*", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "the time part must be digits"},
+  {"send": ["XADD", "bad", "*-0", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "even with an explicit sequence"},
+  {"send": ["XADD", "bad", "5-**", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "only a single star stands in for the sequence"},
+  {"send": ["XADD", "bad", "5-*x", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "no trailing junk after the star"},
+  {"send": ["XADD", "bad", "5-1*", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "nor a star after digits"},
+  {"send": ["XADD", "bad", "-*", "f", "v"], "expect": "-ERR Invalid stream ID specified as stream command argument\r\n", "label": "an empty time part"},
+  {"send": ["TYPE", "bad"], "expect": "+none\r\n", "label": "none of those created the key"},
+
+  {"send": ["SET", "str", "hello"], "expect": "+OK\r\n", "label": "setup: a string"},
+  {"send": ["XADD", "str", "5-*", "f", "v"], "expect": "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "label": "a generated id still reaches the type check"},
+  {"send": ["GET", "str"], "expect": "$5\r\nhello\r\n", "label": "the string is untouched"},
+
+  {"send": ["XADD", "shared", "7-*", "f", "v"], "expect": "$3\r\n7-0\r\n", "label": "first client generates"},
+  {"send": ["XADD", "shared", "7-*", "f", "v"], "client": "b", "expect": "$3\r\n7-1\r\n", "label": "a second client continues the same sequence"},
+  {"send": ["XADD", "shared", "7-*", "f", "v"], "expect": "$3\r\n7-2\r\n", "label": "and the first sees the second's entry"}
+]

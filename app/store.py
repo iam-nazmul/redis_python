@@ -1,19 +1,133 @@
 """The keyspace: values, their optional expiries and type checks."""
 
 import time
-from dataclasses import dataclass
+from bisect import bisect_left
+from dataclasses import dataclass, field
 
-# Redis values are typed; so far this clone stores strings and lists.
-Value = bytes | list[bytes]
+
+@dataclass(frozen=True, order=True)
+class EntryId:
+    """A stream entry's id: a millisecond timestamp and a sequence within it.
+
+    Ordered, because a stream keeps its entries in ascending id order and later
+    stages have to reject an id that does not advance past the last one.
+    """
+
+    milliseconds: int
+    sequence: int
+
+    def encode(self) -> bytes:
+        return b"%d-%d" % (self.milliseconds, self.sequence)
+
+
+@dataclass
+class StreamEntry:
+    id: EntryId
+    # Flat field/value pairs, kept in the order they were given: a stream entry
+    # is an ordered map, and repeated fields are preserved rather than merged.
+    fields: list[bytes]
+
+
+# The id every stream starts from: the first entry must beat it, which is why
+# Redis rejects an explicit 0-0 outright.
+MIN_ENTRY_ID = EntryId(0, 0)
+
+
+@dataclass
+class Stream:
+    """A sequence of entries in ascending id order.
+
+    A class of its own rather than a plain list, so that the accessors can tell a
+    stream from a list and answer -WRONGTYPE for the commands of the other type.
+    """
+
+    entries: list[StreamEntry] = field(default_factory=list)
+    # Tracked apart from entries[-1] because it is the high-water mark, not the
+    # last element: a stream emptied by a future XDEL still refuses ids below it.
+    last_id: EntryId = MIN_ENTRY_ID
+
+    def next_id(self, milliseconds: int) -> EntryId:
+        """The id for *milliseconds* when the client left the sequence to us.
+
+        Within the millisecond the stream is already on, the sequence carries on
+        from the last one; a millisecond the stream has not reached yet starts at
+        0. Redis' rule that a time part of 0 starts at 1 instead needs no case of
+        its own: an empty stream's last id is 0-0, so 0 is a millisecond it has
+        already reached and the sequence carries on to 1 by itself.
+
+        A millisecond *behind* the last id still produces an id here; append
+        rejects it, so the too-small reply does not depend on how the id was
+        written.
+        """
+        if milliseconds == self.last_id.milliseconds:
+            return EntryId(milliseconds, self.last_id.sequence + 1)
+        return EntryId(milliseconds, 0)
+
+    def next_id_from_clock(self, milliseconds: int) -> EntryId:
+        """The id for a fully generated "*", from the clock reading *milliseconds*.
+
+        The clock is clamped forward to the last id's millisecond first, so a
+        clock that has moved backwards — or a stream carrying an explicit id from
+        the future — still yields an id that advances. That is what makes "*" the
+        one id form that cannot fail: it always lands past the last entry.
+        """
+        return self.next_id(max(milliseconds, self.last_id.milliseconds))
+
+    def range(self, start: EntryId, end: EntryId | None) -> list[StreamEntry]:
+        """The entries from *start* inclusive up to *end* exclusive.
+
+        An exclusive end because XRANGE's own end is inclusive but may name only a
+        millisecond, and there is no largest sequence to stand in for the rest of
+        it — sequences here are unbounded ints. The caller turns either form into
+        the id just past the last one it wants, which is exact for integers.
+
+        *end* is None for a range with no upper bound at all, which is what "+"
+        asks for: with unbounded ids there is no largest id to end at, so the
+        range runs to the last entry instead.
+
+        Entries are appended in ascending id order, so the bounds can be found by
+        bisection rather than by scanning the whole stream.
+        """
+        first = bisect_left(self.entries, start, key=lambda entry: entry.id)
+        if end is None:
+            return self.entries[first:]
+        last = bisect_left(self.entries, end, key=lambda entry: entry.id)
+        return self.entries[first:last]
+
+    def append(self, entry_id: EntryId, fields: list[bytes]) -> EntryId:
+        """Append an entry, or raise StreamOrderError if the id does not advance."""
+        if entry_id <= self.last_id:
+            raise StreamOrderError(entry_id)
+        self.entries.append(StreamEntry(entry_id, fields))
+        self.last_id = entry_id
+        return entry_id
+
+
+# Redis values are typed; so far this clone stores strings, lists and streams.
+Value = bytes | list[bytes] | Stream
 
 
 class WrongTypeError(Exception):
     """Raised when a command is used on a key holding a different type."""
 
 
+class StreamOrderError(Exception):
+    """Raised when an entry id is not strictly greater than the stream's last id."""
+
+
 def now_ms() -> float:
     """The monotonic clock in milliseconds, unaffected by system clock changes."""
     return time.monotonic() * 1000
+
+
+def unix_ms() -> int:
+    """Wall-clock Unix time in milliseconds.
+
+    Deliberately not now_ms. Expiry needs a clock that cannot jump, but a stream
+    id is a timestamp clients read and compare against their own wall clock, so it
+    has to track the system clock even though that one can move backwards.
+    """
+    return int(time.time() * 1000)
 
 
 @dataclass
@@ -43,9 +157,22 @@ class Store:
             return None
         return entry.value
 
+    def type_of(self, key: bytes) -> bytes:
+        """Return the Redis type name at *key*, or b"none" when it does not exist.
+
+        The one accessor that never raises WrongTypeError: reporting the type is
+        the whole point, so every type is a valid answer.
+        """
+        value = self.get(key)
+        if value is None:
+            return b"none"
+        if isinstance(value, Stream):
+            return b"stream"
+        return b"list" if isinstance(value, list) else b"string"
+
     def get_string(self, key: bytes) -> bytes | None:
         value = self.get(key)
-        if isinstance(value, list):
+        if value is not None and not isinstance(value, bytes):
             raise WrongTypeError(key)
         return value
 
@@ -97,5 +224,32 @@ class Store:
             value = []
             self._entries[key] = Entry(value)
         elif not isinstance(value, list):
+            raise WrongTypeError(key)
+        return value
+
+    def get_or_create_stream(self, key: bytes) -> Stream:
+        """Return the stream at *key*, creating an empty one if the key is absent.
+
+        Like get_or_create_list the stream is returned by reference, so appending
+        an entry leaves any expiry the key already had untouched.
+        """
+        value = self.get(key)
+        if value is None:
+            value = Stream()
+            self._entries[key] = Entry(value)
+        elif not isinstance(value, Stream):
+            raise WrongTypeError(key)
+        return value
+
+    def get_stream(self, key: bytes) -> Stream:
+        """Return the stream at *key*, or an empty one when the key is absent.
+
+        Read-only, like get_list: querying a stream must not create it, so the
+        empty stream returned for a missing key is a throwaway, not stored.
+        """
+        value = self.get(key)
+        if value is None:
+            return Stream()
+        if not isinstance(value, Stream):
             raise WrongTypeError(key)
         return value
