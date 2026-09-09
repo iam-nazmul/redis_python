@@ -57,6 +57,7 @@ ENTRY_ID_AT_MINIMUM = resp.error(
     b"ERR The ID specified in XADD must be greater than 0-0"
 )
 # Not diffed against a live server; taken from the Redis source's wording.
+EXEC_WITHOUT_MULTI = resp.error(b"ERR EXEC without MULTI")
 UNBALANCED_STREAMS = resp.error(
     b"ERR Unbalanced XREAD list of streams: "
     b"for each stream key an ID or '$' must be specified."
@@ -583,3 +584,13 @@ def multi(store: Store, args: resp.Command) -> bytes:
     # deliberately, so that it stays testable without a socket. That is the next
     # stage's problem, and until then MULTI says OK and changes nothing.
     return resp.OK
+
+
+@command(b"EXEC")
+def exec_(store: Store, args: resp.Command) -> bytes:
+    if len(args) != 1:
+        return wrong_args(b"EXEC")
+    # Always the error for now: MULTI only replies, so no connection is ever in a
+    # transaction and every EXEC that arrives is one without it. Once MULTI opens
+    # a transaction, this grows the branch that runs the queued commands.
+    return EXEC_WITHOUT_MULTI

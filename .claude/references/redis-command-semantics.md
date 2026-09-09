@@ -14,6 +14,7 @@ tests and `redis-cli` both compare them literally.
 | `GET key` | bulk string, or `$-1\r\n` when missing or expired |
 | `INCR key` | `:<new value>\r\n`; a missing key starts at `:1\r\n` |
 | `MULTI` | `+OK\r\n` — **the reply only so far**; commands after it are not yet queued |
+| `EXEC` | `-ERR EXEC without MULTI\r\n` — **always, so far**, since no connection is ever in a transaction |
 | `RPUSH key el [el ...]` | `:<new length>\r\n` |
 | `LPUSH key el [el ...]` | `:<new length>\r\n` |
 | `LRANGE key start stop` | array of elements, `*0\r\n` when the range is empty or the key is missing |
@@ -44,10 +45,15 @@ Whatever carries the queue has to reach `Connection`, which already holds a
 `pending` deque for the blocking path — a queue of commands not yet run, for a
 different reason.
 
-Two things that follow from queueing and are therefore still missing: a nested
-`MULTI` is accepted here rather than answering `-ERR MULTI calls can not be
-nested`, and `EXEC` and `DISCARD` do not exist yet, so they are unknown commands
-rather than `-ERR EXEC without MULTI`.
+`EXEC` exists but has only its error: with no transaction ever open, every `EXEC`
+is one without a `MULTI`, so `-ERR EXEC without MULTI` is the whole command for
+now. When `MULTI` starts tracking, this grows the branch that runs the queue and
+replies with an array of the queued commands' answers.
+
+Two more things that follow from queueing and are still missing: a nested `MULTI`
+is accepted here rather than answering `-ERR MULTI calls can not be nested`, and
+`DISCARD` does not exist yet, so it is an unknown command rather than
+`-ERR DISCARD without MULTI`.
 
 ### INCR
 

@@ -1,0 +1,17 @@
+[
+  {"send": ["EXEC"], "expect": "-ERR EXEC without MULTI\r\n", "label": "EXEC on its own is an error"},
+  {"send": ["exec"], "expect": "-ERR EXEC without MULTI\r\n", "label": "verb is case-insensitive"},
+  {"send": ["EXEC"], "expect": "-ERR EXEC without MULTI\r\n", "label": "and stays an error when repeated"},
+
+  {"send": ["EXEC", "extra"], "expect": "-ERR wrong number of arguments for 'exec' command\r\n", "label": "EXEC takes no arguments"},
+
+  {"send": ["MULTI"], "expect": "+OK\r\n", "label": "setup: MULTI"},
+  {"send": ["EXEC"], "expect": "-ERR EXEC without MULTI\r\n", "label": "NOT YET TRACKED: MULTI does not open a transaction yet"},
+
+  {"send": ["SET", "foo", "1"], "expect": "+OK\r\n", "label": "the connection still works after the error"},
+  {"send": ["EXEC"], "expect": "-ERR EXEC without MULTI\r\n", "label": "EXEC again"},
+  {"send": ["GET", "foo"], "expect": "$1\r\n1\r\n", "label": "and the keyspace is untouched by it"},
+  {"send": ["TYPE", "nokey"], "expect": "+none\r\n", "label": "EXEC created nothing"},
+
+  {"send": ["EXEC"], "client": "b", "expect": "-ERR EXEC without MULTI\r\n", "label": "a second client gets the same error"}
+]
